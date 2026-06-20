@@ -1,0 +1,29 @@
+# Binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test / coverage
+*.test
+*.out
+coverage.*
+
+# Env / secrets
+.env
+.env.local
+*-firebase.json
+firebase-credentials*.json
+
+# Go
+go.work
+go.work.sum
+vendor/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
