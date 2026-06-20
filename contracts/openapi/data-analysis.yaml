@@ -1,0 +1,40 @@
+openapi: 3.0.3
+info:
+  title: data-analysis
+  version: 1.0.0
+  description: >
+    Endpoint consumido por early-warning para enriquecer reportes. Llamada
+    sincrona protegida por circuit breaker: si data-analysis no responde,
+    early-warning degrada a umbral simple y omite data_analysis (CLAUDE.md §2.3).
+paths:
+  /api/v1/analyze:
+    post:
+      summary: Analiza una ventana de un proyecto y devuelve enriquecimiento
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, period, window_start, window_end]
+              properties:
+                project_id: { type: string }
+                period: { type: string, enum: [daily, weekly] }
+                window_start: { type: string, format: date-time }
+                window_end: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Enriquecimiento (se inserta en report.data_analysis)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "404": { description: Sin datos para la ventana }
+        "503": { description: No disponible (dispara circuit breaker) }
+  /health:
+    get:
+      summary: Health check
+      responses:
+        "200": { description: OK }
+        "503": { description: Dependencia caida }

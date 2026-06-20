@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AngelloFD/go-early-warning/contracts/schemas/sensor_reading.schema.json",
+  "title": "SensorReading",
+  "description": "Mensaje crudo de sensor consumido por early-warning desde la cola early_warning.evaluate (origen sensors.raw). Solo sensor_type=gnss con fix_quality=rtk_fixed dispara evaluacion.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "message_id",
+    "project_id",
+    "sensor_id",
+    "sensor_type",
+    "timestamp",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "Version semantica major.minor del contrato."
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UUID v4 generado por el productor tras deduplicar el frame crudo. Clave de idempotencia."
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sensor_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sensor_type": {
+      "type": "string",
+      "description": "Tipo de sensor. early-warning solo evalua 'gnss'.",
+      "examples": ["gnss", "deep_displacement", "rainfall"]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Instante de la lectura, ISO-8601 UTC."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Cuerpo especifico del sensor. Para gnss se requieren los campos de desplazamiento.",
+      "properties": {
+        "cumulative_displacement_mm": {
+          "type": "number",
+          "description": "Desplazamiento acumulado en mm (gnss)."
+        },
+        "fix_quality": {
+          "type": "string",
+          "description": "Calidad de fix GNSS. early-warning solo procesa 'rtk_fixed'.",
+          "examples": ["rtk_fixed", "rtk_float", "single"]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

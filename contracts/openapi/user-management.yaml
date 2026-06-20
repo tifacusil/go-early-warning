@@ -1,0 +1,47 @@
+openapi: 3.0.3
+info:
+  title: user-management
+  version: 1.0.0
+  description: >
+    Suscripciones de notificacion consumidas por early-warning para resolver
+    tokens FCM destino (puerto de redis_cache._fetch_subscriptions). Auth via
+    header X-Api-Key.
+paths:
+  /api/v1/users/subscriptions:
+    get:
+      summary: Lista suscripciones (filtradas por proyecto del lado cliente)
+      security:
+        - apiKey: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Subscription" }
+  /health:
+    get:
+      summary: Health check
+      responses:
+        "200": { description: OK }
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+  schemas:
+    Subscription:
+      type: object
+      required: [id, project_id, push_enabled, min_alert_level, fcm_tokens]
+      properties:
+        id: { type: string }
+        project_id: { type: string }
+        push_enabled: { type: boolean }
+        min_alert_level: { type: string, enum: [blue, orange, red] }
+        quiet_hours_start: { type: string, nullable: true, description: "HH:MM:SS" }
+        quiet_hours_end: { type: string, nullable: true, description: "HH:MM:SS" }
+        fcm_tokens:
+          type: array
+          items: { type: string }

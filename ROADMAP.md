@@ -118,16 +118,16 @@ go-early-warning/
 
 **Objetivo:** JSON Schemas + OpenAPI versionados ANTES de portar lógica. CLAUDE.md §1.1 bloquea handlers sin contrato.
 
-- [ ] `contracts/schemas/*.schema.json` (JSON Schema Draft 2020-12) con envelope `schema_version` semántico:
-  - [ ] `sensor_reading` (mensaje `sensors.raw` → `early_warning.evaluate`): campos `message_id`, `project_id`, `sensor_id`, `sensor_type`, `timestamp`, `payload{cumulative_displacement_mm, fix_quality,...}`.
-  - [ ] `alert` (mensaje publicado a `alerts.<project>.<level>`): derivado del alert dict de `threshold_engine.py:132`.
-  - [ ] `report` (entidad de reportes daily/weekly).
-- [ ] `contracts/openapi/early-warning.yaml` — port del `_openapi_spec()` de `app.py`: `/health`, `/alerts/recent`, `/reports/latest`, `/reports/generate`.
-- [ ] OpenAPI para los servicios síncronos consumidos: `data-analysis` (endpoint que enriquece reporte), `user-management` (`/api/v1/users/subscriptions`).
-- [ ] `contracts/examples/` — mensajes ejemplo válidos por schema.
-- [ ] `contract-validate` tool (Go) — valida examples contra schemas. Regla de versionado: aditivo+opcional → minor; incompatible → major con gracia (CLAUDE.md §1.4).
+- [x] `contracts/schemas/*.schema.json` (JSON Schema Draft 2020-12) con envelope `schema_version` semántico:
+  - [x] `sensor_reading` (mensaje `sensors.raw` → `early_warning.evaluate`): campos `message_id`, `project_id`, `sensor_id`, `sensor_type`, `timestamp`, `payload{cumulative_displacement_mm, fix_quality,...}`.
+  - [x] `alert` (mensaje publicado a `alerts.<project>.<level>`): derivado del alert dict de `threshold_engine.py:132`.
+  - [x] `report` (entidad de reportes daily/weekly).
+- [x] `contracts/openapi/early-warning.yaml` — port del `_openapi_spec()` de `app.py`: `/health`, `/alerts/recent`, `/reports/latest`, `/reports/generate`.
+- [x] OpenAPI para los servicios síncronos consumidos: `data-analysis` (endpoint que enriquece reporte), `user-management` (`/api/v1/users/subscriptions`).
+- [x] `contracts/examples/` — mensajes ejemplo válidos por schema.
+- [x] `contract-validate` tool (Go) — valida examples contra schemas + regla envelope `schema_version` major.minor (CLAUDE.md §1.4). Unit test incluido.
 
-**DoD:** todos los examples validan; CI falla si un schema rompe versionado.
+**DoD:** todos los examples validan; CI falla si un schema rompe versionado. ✅ (`make contract-validate` verde)
 
 ---
 

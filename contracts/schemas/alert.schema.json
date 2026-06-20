@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AngelloFD/go-early-warning/contracts/schemas/alert.schema.json",
+  "title": "Alert",
+  "description": "Alerta de velocidad de deformacion emitida por early-warning a alerts.<project>.<level>. Derivada de threshold_engine.evaluate_message.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "message_id",
+    "project_id",
+    "sensor_id",
+    "alert_type",
+    "alert_level",
+    "deformation_speed_mm_day",
+    "current_displacement_mm",
+    "previous_displacement_mm",
+    "threshold_mm_day",
+    "timestamp"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UUID v4 de la alerta. Clave de idempotencia para consumidores aguas abajo."
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sensor_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "alert_type": {
+      "type": "string",
+      "const": "deformation_speed"
+    },
+    "alert_level": {
+      "type": "string",
+      "enum": ["blue", "orange", "red"]
+    },
+    "deformation_speed_mm_day": {
+      "type": "number",
+      "description": "Velocidad de deformacion calculada (mm/dia)."
+    },
+    "current_displacement_mm": {
+      "type": "number"
+    },
+    "previous_displacement_mm": {
+      "type": "number"
+    },
+    "threshold_mm_day": {
+      "type": "number",
+      "description": "Umbral del nivel disparado, segun project-management."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": true
+}

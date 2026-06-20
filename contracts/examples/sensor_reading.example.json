@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "message_id": "5f1d8c2a-3b4e-4a7f-9c1d-2e6b8a0f4c11",
+  "project_id": "shangtan",
+  "sensor_id": "gnss-shangtan-007",
+  "sensor_type": "gnss",
+  "timestamp": "2026-06-20T08:15:00Z",
+  "payload": {
+    "cumulative_displacement_mm": 142.7,
+    "fix_quality": "rtk_fixed"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "message_id": "9a2c7e10-44bd-4f3a-8c2e-1b5d9f6a3c80",
+  "project_id": "shangtan",
+  "sensor_id": "gnss-shangtan-007",
+  "alert_type": "deformation_speed",
+  "alert_level": "red",
+  "deformation_speed_mm_day": 23.481234,
+  "current_displacement_mm": 142.7,
+  "previous_displacement_mm": 140.5,
+  "threshold_mm_day": 20.0,
+  "timestamp": "2026-06-20T08:15:00Z"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "report_id": "c4e8b1a6-7d92-4f05-b3a1-9e2c6f8d0a55",
+  "project_id": "shangtan",
+  "period": "daily",
+  "window_start": "2026-06-19T00:00:00Z",
+  "window_end": "2026-06-20T00:00:00Z",
+  "generated_at": "2026-06-20T00:05:00Z",
+  "summary": {
+    "total": 5,
+    "by_level": { "blue": 2, "orange": 2, "red": 1 },
+    "max_speed_mm_day": 23.481234,
+    "avg_speed_mm_day": 14.62
+  },
+  "system": {
+    "service": "early-warning",
+    "alerts_generated_total": 1287,
+    "last_message_processed_at": "2026-06-19T23:58:11Z"
+  },
+  "data_analysis": {
+    "trend": "accelerating",
+    "model_version": "1.2.0"
+  }
+}

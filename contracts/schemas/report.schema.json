@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AngelloFD/go-early-warning/contracts/schemas/report.schema.json",
+  "title": "Report",
+  "description": "Reporte periodico (daily/weekly) generado por early-warning. Derivado de app._generate_report. data_analysis es opcional (presente solo si data-analysis respondio; ausente si circuit breaker abierto).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "report_id",
+    "project_id",
+    "period",
+    "window_start",
+    "window_end",
+    "generated_at",
+    "summary",
+    "system"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "report_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UUID v4 del reporte."
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "period": {
+      "type": "string",
+      "enum": ["daily", "weekly"]
+    },
+    "window_start": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "window_end": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "summary": {
+      "type": "object",
+      "description": "Resumen de alertas en la ventana.",
+      "required": ["total", "by_level"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "by_level": {
+          "type": "object",
+          "required": ["blue", "orange", "red"],
+          "properties": {
+            "blue": { "type": "integer", "minimum": 0 },
+            "orange": { "type": "integer", "minimum": 0 },
+            "red": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "max_speed_mm_day": { "type": ["number", "null"] },
+        "avg_speed_mm_day": { "type": ["number", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "system": {
+      "type": "object",
+      "description": "Metadatos del servicio al generar el reporte.",
+      "properties": {
+        "service": { "type": "string" },
+        "alerts_generated_total": { "type": "integer", "minimum": 0 },
+        "last_message_processed_at": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "data_analysis": {
+      "type": "object",
+      "description": "Enriquecimiento opcional desde data-analysis (HTTP). Ausente si el circuit breaker esta abierto (degradacion a umbral simple).",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
