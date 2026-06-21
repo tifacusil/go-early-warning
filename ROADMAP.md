@@ -136,22 +136,23 @@ go-early-warning/
 **Objetivo:** reescribir el único servicio existente con paridad funcional + prácticas CLAUDE.md. Pieza central de la tesis (de aquí salen los benchmarks).
 
 ### 2.1 Lógica de negocio pura (sin I/O)
-- [ ] `internal/earlywarning/threshold` — port de `threshold_engine.py`: `EvaluateMessage(msg, prev) → EvalResult`. Velocidad de deformación, niveles blue/orange/red, gap reset, dt máximo. **Unit-testeable sin deps.**
-- [ ] Umbrales por proyecto externalizados (config, no hardcode como `config.py:74`).
+- [x] `internal/earlywarning/threshold` — port de `threshold_engine.py`: `Config.Evaluate(msg, prev, levels) → Result`. Velocidad de deformación, niveles blue/orange/red, gap reset, dt máximo. **Unit-testeable sin deps** (`NewID` inyectable).
+- [x] Umbrales por proyecto inyectados vía `ThresholdProvider` (no en lógica). `staticLevels` provisional en `cmd/`, `// TODO(SE-practice):` → project-management (Hito 5).
 
 ### 2.2 Adaptadores I/O
-- [ ] `internal/earlywarning/cache` (Redis) — port de `redis_cache.py`: last reading, alerts_generated, recent alerts, last_message_processed_at.
-- [ ] `internal/earlywarning/store` (MySQL) — alerts + reports. Migraciones `golang-migrate` (CLAUDE.md §2.4), NO `CREATE TABLE IF NOT EXISTS` en runtime como el baseline.
-- [ ] `internal/earlywarning/consumer` (RabbitMQ) — port de `consumer.py`: consume `early_warning.evaluate`, evalúa, publica alerta.
-- [ ] `internal/earlywarning/publisher` — port de `alert_publisher.py`: publish a RabbitMQ (`alerts.<p>.<l>`), HTTP, push Firebase (FCM).
-- [ ] `internal/earlywarning/api` (HTTP) — port de `app.py`: endpoints + report scheduler + OpenAPI/`/docs`.
+- [x] `internal/earlywarning/cache` (Redis, go-redis/v9) — port de `redis_cache.py`: last reading, alerts_generated, recent alerts, last_message_processed_at, `Ping` para /health.
+- [x] `internal/earlywarning/store` (MySQL, go-sql-driver) — alerts + reports. Migraciones `golang-migrate` en `migrations/early_warning/` (CLAUDE.md §2.4), **NO** `CREATE TABLE` en runtime. `RecordAlert` usa `INSERT IGNORE` keyed por `message_id` (base de idempotencia Hito 3).
+- [x] `internal/earlywarning/consumer` (RabbitMQ, amqp091) — port de `consumer.py`: consume `early_warning.evaluate`, evalúa, fan-out, ack tras procesar.
+- [x] `internal/earlywarning/publisher` — port de `alert_publisher.py`: publish RabbitMQ (`alerts.<p>.<l>`), HTTP webhook, push FCM (`Pusher` inyectable).
+- [x] `internal/earlywarning/api` (HTTP, net/http) — port de `app.py`: `/health` (probe real Redis+MySQL), `/alerts/recent`, `/reports/latest`, `/reports/generate`, generación de reportes + scheduler daily/weekly idempotente.
+- [ ] OpenAPI/`/docs` servidos en runtime — spec ya en `contracts/openapi/`; servirlo es menor. `// TODO`.
 
 ### 2.3 Integraciones externas
-- [ ] Subscriptions fetch desde `user-management` (HTTP).
-- [ ] Firebase Admin SDK Go (FCM) — multicast/topic, port de `publish_notification`.
-- [ ] Consul registrar — port de `consul_registrar.py`: self-register, health check cada 10s, deregister on exit, tags `version-`/`lang-`/`env-`.
+- [x] Subscriptions fetch desde `user-management` (HTTP) — `internal/earlywarning/subs`: filtros push_enabled / min_alert_level / quiet hours (red override), unit-testeado.
+- [x] Firebase Admin SDK Go (FCM) — `firebase.google.com/go/v4`, multicast, no-op si sin credenciales. Port de `publish_notification`.
+- [x] Consul registrar — `pkg/consul`: self-register, health check 10s, deregister, tags `lang-go`/`version-1`/`env-`.
 
-**DoD:** `early-warning` Go corre contra el mismo RabbitMQ/Redis/MySQL que el baseline y produce alertas idénticas para el mismo input.
+**DoD:** `early-warning` Go compila, `cmd/early-warning` cablea todo, vet+test verdes. Paridad funcional vs baseline. Verificación contra infra real (alertas idénticas) → pendiente, requiere docker-compose levantado (Hito 6 integration).
 
 ---
 
