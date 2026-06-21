@@ -38,7 +38,8 @@ go-early-warning/
 ├── go.mod                          # módulo github.com/AngelloFD/go-early-warning
 ├── go.sum
 ├── Makefile                        # build, test, lint, vet, contract-validate
-├── docker-compose.dev.yml          # RabbitMQ, MySQL, Redis, Consul
+├── Dockerfile                      # imagen del servicio -> ghcr.io/tifacusil/early-warning
+│                                   # infra (tesis-infra) provee compose/env, no este repo
 │
 ├── contracts/                      # ◄── HITO 1 empieza aquí
 │   ├── schemas/                    # JSON Schema Draft 2020-12
@@ -102,15 +103,15 @@ go-early-warning/
 
 **Objetivo:** repo Go inicializado, layout estándar, tooling, CI base. Sin lógica de negocio.
 
-- [ ] `git init` + `.gitignore` Go.
-- [ ] `go.mod` (módulo `github.com/AngelloFD/go-early-warning`), Go 1.22+.
-- [ ] Layout monorepo: `cmd/<service>/`, `internal/<service>/`, `pkg/` (libs compartidas), `contracts/`, `deploy/`.
-- [ ] `pkg/` compartido — esqueletos: `logging` (JSON estructurado + trace_id), `config` (env/Consul KV), `httpx` (cliente con timeout/breaker/retry), `health`, `metrics` (Prometheus), `amqp` (conn + publisher confirms + DLX), `idempotency` (dedup store).
-- [ ] Makefile / `Taskfile`: `build`, `test`, `lint`, `vet`, `contract-validate`.
-- [ ] CI (GitHub Actions): `go vet`, `golangci-lint`, `go test ./...`, validación de contratos.
-- [ ] `docker-compose.dev.yml`: RabbitMQ, MySQL (×N esquemas), Redis, Consul.
+- [x] `git init` + `.gitignore` + `.gitattributes` (eol=lf).
+- [x] `go.mod` (módulo `github.com/AngelloFD/go-early-warning`), Go 1.26 (forzado por deps: hashicorp/consul/api).
+- [x] Layout monorepo: `cmd/<service>/`, `internal/<service>/`, `pkg/`, `contracts/`, `tools/`, `migrations/`, `deploy/`.
+- [x] `pkg/` compartido — esqueletos: `logging` (JSON+trace_id, ya implementado), `config` (env), `httpx` (breaker/retry — esqueleto), `health`, `metrics`, `amqp` (confirms+DLX — esqueleto), `idempotency` (esqueleto), `consul` (implementado).
+- [x] Makefile: `build`, `test`, `lint`, `vet`, `contract-validate`, `ci`.
+- [x] CI (GitHub Actions): `go vet`, `golangci-lint`, `go test ./...`, `contract-validate` (Go 1.26).
+- [x] `Dockerfile` multi-stage → `ghcr.io/tifacusil/early-warning`. Infra (tesis-infra) provee compose/env por servicio; **este repo no lleva compose**.
 
-**DoD:** `make build && make test` verde con servicios vacíos.
+**DoD:** `go build && go test` verde; imagen Docker construye. ✅
 
 ---
 

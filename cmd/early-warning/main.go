@@ -43,20 +43,20 @@ func main() {
 }
 
 func run(ctx context.Context, log *slog.Logger) error {
-	// --- Redis ---
+	// --- Redis (compartido en infra: host "redis", auth REDIS_PASSWORD) ---
 	redisCache := cache.New(cache.Config{
-		Host: config.String("REDIS_HOST", "127.0.0.1"),
+		Host: config.String("REDIS_HOST", "redis"),
 		Port: config.Int("REDIS_PORT", 6379),
-		Pass: config.String("REDIS_PASS", ""),
+		Pass: config.String("REDIS_PASSWORD", ""),
 	})
 
-	// --- MySQL ---
+	// --- MySQL (BD exclusiva del servicio, database-per-service §1.2) ---
 	st, err := store.New(store.Config{
-		Host: config.String("MYSQL_HOST", "127.0.0.1"),
+		Host: config.String("MYSQL_HOST", "mysql-early-warning"),
 		Port: config.Int("MYSQL_PORT", 3306),
-		User: config.String("MYSQL_USER", "early_warning"),
-		Pass: config.String("MYSQL_PASS", ""),
-		DB:   config.String("MYSQL_DB", "early_warning_db"),
+		User: config.String("MYSQL_USER", "svc_early_warning"),
+		Pass: config.String("MYSQL_PASSWORD", ""),
+		DB:   config.String("MYSQL_DATABASE", "early_warning"),
 	})
 	if err != nil {
 		return err
@@ -113,7 +113,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	// --- Consumer ---
 	cons := consumer.New(consumer.Deps{
 		Channel:   consumeCh,
-		Queue:     config.String("QUEUE_NAME", "early_warning.evaluate"),
+		Queue:     config.String("RABBITMQ_QUEUE", "early_warning.evaluate"),
 		Engine:    engine,
 		Cache:     redisCache,
 		Store:     st,
@@ -134,7 +134,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Cache:           redisCache,
 		Store:           st,
 		DataAnalysisURL: config.String("DATA_ANALYSIS_URL", ""),
-		DataAnalysisTO:  config.Duration("DATA_ANALYSIS_TIMEOUT", 5*time.Second),
+		DataAnalysisTO:  time.Duration(config.Int("DATA_ANALYSIS_TIMEOUT_MS", 5000)) * time.Millisecond,
 		Log:             log,
 		HealthProbes: map[string]func(context.Context) error{
 			"redis": redisCache.Ping,
@@ -142,7 +142,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		},
 	})
 	httpSrv := &http.Server{
-		Addr:    ":" + config.String("EARLY_WARNING_PORT", "8083"),
+		Addr:    ":" + config.String("HTTP_PORT", "8080"),
 		Handler: srv.Routes(),
 	}
 
@@ -155,7 +155,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 
 	// --- Consul registration (best effort) ---
 	if config.Bool("CONSUL_ENABLED", true) {
-		registerConsul(httpSrv.Addr, log)
+		registerConsul(log)
 	}
 
 	go func() {
@@ -204,9 +204,9 @@ func defaultLevels() staticLevels {
 	}
 }
 
-func registerConsul(addr string, log *slog.Logger) {
+func registerConsul(log *slog.Logger) {
 	cl, err := consul.NewClient(consul.AgentConfig{
-		Host:   config.String("CONSUL_HOST", "127.0.0.1"),
+		Host:   config.String("CONSUL_HOST", "consul-1"),
 		Port:   config.Int("CONSUL_PORT", 8500),
 		Scheme: config.String("CONSUL_SCHEME", "http"),
 		Token:  config.String("CONSUL_TOKEN", ""),
@@ -215,10 +215,14 @@ func registerConsul(addr string, log *slog.Logger) {
 		log.Warn("consul_setup_failed", "err", err.Error())
 		return
 	}
-	address := config.String("CONSUL_SERVICE_ADDRESS", "127.0.0.1")
-	port := config.Int("CONSUL_SERVICE_PORT", 8083)
+	// En infra cada instancia se anuncia por su hostname (early-warning-1/-2),
+	// alcanzable en la red landslide-net en HTTP_PORT.
+	instance := config.String("INSTANCE_ID", "early-warning-1")
+	address := config.String("CONSUL_SERVICE_ADDRESS", instance)
+	port := config.Int("HTTP_PORT", 8080)
 	if err := cl.Register(consul.Registration{
 		ServiceName:     serviceName,
+		ServiceID:       serviceName + "-" + instance,
 		Address:         address,
 		Port:            port,
 		Tags:            []string{"lang-go", "version-1", "env-" + config.String("ENV", "dev")},

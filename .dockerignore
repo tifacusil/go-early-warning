@@ -1,0 +1,10 @@
+.git
+.github
+*.md
+ROADMAP.md
+.env
+.env.*
+bin/
+*.exe
+deploy/
+k8s/
