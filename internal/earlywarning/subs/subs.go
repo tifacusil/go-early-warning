@@ -1,71 +1,73 @@
-// Package subs resolves FCM device tokens from user-management, ported from the
-// subscription logic of redis_cache.py (push_enabled, min_alert_level, quiet
-// hours). HTTP call uses an explicit timeout (CLAUDE.md §1.5); the circuit
-// breaker is layered in Hito 3.
+// Package subs resolves FCM device tokens from user-management over gRPC,
+// applying the push_enabled / min_alert_level / quiet-hours rules ported from
+// redis_cache.py. The gRPC call is guarded by timeout + retry + circuit breaker
+// (CLAUDE.md §1.5 / §4).
 package subs
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"time"
+
+	"google.golang.org/grpc"
+
+	umv1 "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/usermanagement/v1"
+	"github.com/AngelloFD/go-early-warning/pkg/grpcx"
 )
 
 var levelValue = map[string]int{"blue": 1, "orange": 2, "red": 3}
 
-// Config holds user-management connection settings.
-type Config struct {
-	BaseURL string
-	APIKey  string
-	Timeout time.Duration
-}
-
-// Subscription mirrors contracts/openapi/user-management.yaml.
+// Subscription is the resolved view used by the filter logic.
 type Subscription struct {
-	ID              string   `json:"id"`
-	ProjectID       string   `json:"project_id"`
-	PushEnabled     bool     `json:"push_enabled"`
-	MinAlertLevel   string   `json:"min_alert_level"`
-	QuietHoursStart string   `json:"quiet_hours_start"`
-	QuietHoursEnd   string   `json:"quiet_hours_end"`
-	FCMTokens       []string `json:"fcm_tokens"`
+	ID              string
+	ProjectID       string
+	PushEnabled     bool
+	MinAlertLevel   string
+	QuietHoursStart string
+	QuietHoursEnd   string
+	FCMTokens       []string
 }
 
-// Resolver fetches and filters subscriptions.
+// Resolver fetches and filters subscriptions via the user-management gRPC API.
 type Resolver struct {
-	cfg  Config
-	http *http.Client
-	now  func() time.Time
+	client umv1.SubscriptionServiceClient
+	caller *grpcx.Caller
+	now    func() time.Time
 }
 
-// New builds a Resolver.
-func New(cfg Config) *Resolver {
-	if cfg.Timeout <= 0 {
-		cfg.Timeout = 5 * time.Second
+// New builds a Resolver over an existing gRPC connection. caller carries the
+// timeout/retry/breaker policy.
+func New(conn grpc.ClientConnInterface, caller *grpcx.Caller) *Resolver {
+	return &Resolver{
+		client: umv1.NewSubscriptionServiceClient(conn),
+		caller: caller,
+		now:    time.Now,
 	}
-	return &Resolver{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}, now: time.Now}
 }
+
+// BreakerState exposes the breaker state for /metrics.
+func (r *Resolver) BreakerState() string { return r.caller.State().String() }
 
 func (r *Resolver) fetch(ctx context.Context, projectID string) ([]Subscription, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.cfg.BaseURL+"/api/v1/users/subscriptions", nil)
+	var resp *umv1.GetSubscriptionsResponse
+	err := r.caller.Invoke(ctx, func(c context.Context) error {
+		var e error
+		resp, e = r.client.GetSubscriptions(c, &umv1.GetSubscriptionsRequest{ProjectId: projectID})
+		return e
+	})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Api-Key", r.cfg.APIKey)
-	resp, err := r.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var all []Subscription
-	if err := json.NewDecoder(resp.Body).Decode(&all); err != nil {
-		return nil, err
-	}
-	out := all[:0]
-	for _, s := range all {
-		if s.ProjectID == projectID {
-			out = append(out, s)
-		}
+	out := make([]Subscription, 0, len(resp.GetSubscriptions()))
+	for _, s := range resp.GetSubscriptions() {
+		out = append(out, Subscription{
+			ID:              s.GetId(),
+			ProjectID:       s.GetProjectId(),
+			PushEnabled:     s.GetPushEnabled(),
+			MinAlertLevel:   s.GetMinAlertLevel(),
+			QuietHoursStart: s.GetQuietHoursStart(),
+			QuietHoursEnd:   s.GetQuietHoursEnd(),
+			FCMTokens:       s.GetFcmTokens(),
+		})
 	}
 	return out, nil
 }

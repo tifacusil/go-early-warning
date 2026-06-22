@@ -16,8 +16,11 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/api"
+	dav1 "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/dataanalysis/v1"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/cache"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/consumer"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/publisher"
@@ -26,6 +29,7 @@ import (
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/threshold"
 	"github.com/AngelloFD/go-early-warning/pkg/config"
 	"github.com/AngelloFD/go-early-warning/pkg/consul"
+	"github.com/AngelloFD/go-early-warning/pkg/grpcx"
 	"github.com/AngelloFD/go-early-warning/pkg/idempotency"
 	"github.com/AngelloFD/go-early-warning/pkg/logging"
 	"github.com/AngelloFD/go-early-warning/pkg/metrics"
@@ -104,12 +108,19 @@ func run(ctx context.Context, log *slog.Logger) error {
 		HTTPTimeout:    config.Duration("HTTP_TIMEOUT", 5*time.Second),
 	}, publishCh, pusher, log)
 
-	// --- Subscriptions (user-management) ---
-	resolver := subs.New(subs.Config{
-		BaseURL: config.String("USER_MANAGEMENT_URL", "http://127.0.0.1:8085"),
-		APIKey:  config.String("USER_MANAGEMENT_TOKEN", ""),
-		Timeout: config.Duration("USER_MANAGEMENT_TIMEOUT", 5*time.Second),
-	})
+	// --- gRPC: user-management (subscriptions) ---
+	umConn, err := grpc.NewClient(config.String("USER_MANAGEMENT_GRPC", "user-management-1:9090"),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return err
+	}
+	defer umConn.Close()
+	resolver := subs.New(umConn, grpcx.New(grpcx.Options{
+		Timeout:       time.Duration(config.Int("USER_MANAGEMENT_TIMEOUT_MS", 5000)) * time.Millisecond,
+		MaxRetries:    2,
+		FailThreshold: config.Int("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
+		OpenFor:       time.Duration(config.Int("CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30000)) * time.Millisecond,
+	}))
 
 	// --- Threshold engine + project levels ---
 	engine := threshold.DefaultConfig(float64(config.Int("MAX_DT_SECONDS", 7200)))
@@ -140,17 +151,30 @@ func run(ctx context.Context, log *slog.Logger) error {
 		}
 	}()
 
+	// --- gRPC: data-analysis (enriquecimiento de reportes) ---
+	daConn, err := grpc.NewClient(config.String("DATA_ANALYSIS_GRPC", "data-analysis-1:9090"),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return err
+	}
+	defer daConn.Close()
+	daClient := dav1.NewAnalysisServiceClient(daConn)
+	daCaller := grpcx.New(grpcx.Options{
+		Timeout:       time.Duration(config.Int("DATA_ANALYSIS_TIMEOUT_MS", 5000)) * time.Millisecond,
+		MaxRetries:    2,
+		FailThreshold: config.Int("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
+		OpenFor:       time.Duration(config.Int("CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30000)) * time.Millisecond,
+	})
+
 	// --- HTTP API ---
 	srv := api.New(api.Deps{
-		Service:         serviceName,
-		Cache:           redisCache,
-		Store:           st,
-		DataAnalysisURL:  config.String("DATA_ANALYSIS_URL", ""),
-		DataAnalysisTO:   time.Duration(config.Int("DATA_ANALYSIS_TIMEOUT_MS", 5000)) * time.Millisecond,
-		BreakerThreshold: config.Int("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
-		BreakerResetFor:  time.Duration(config.Int("CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30000)) * time.Millisecond,
-		Metrics:          mx,
-		Log:              log,
+		Service:        serviceName,
+		Cache:          redisCache,
+		Store:          st,
+		DataAnalysis:   daClient,
+		DataAnalysisDo: daCaller,
+		Metrics:        mx,
+		Log:            log,
 		HealthProbes: map[string]func(context.Context) error{
 			"redis": redisCache.Ping,
 			"mysql": st.Ping,

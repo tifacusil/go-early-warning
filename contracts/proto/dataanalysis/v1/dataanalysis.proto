@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+// data-analysis: enriquecimiento de reportes consumido por early-warning.
+// Llamada sincrona gRPC con circuit breaker (CLAUDE.md §2.3): si no responde,
+// early-warning degrada a umbral simple y omite el enriquecimiento.
+package dataanalysis.v1;
+
+option go_package = "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/dataanalysis/v1;dataanalysisv1";
+
+// AnalysisService enriquece una ventana de un proyecto.
+service AnalysisService {
+  rpc Analyze(AnalyzeRequest) returns (AnalyzeResponse);
+}
+
+message AnalyzeRequest {
+  string project_id = 1;
+  string period = 2;        // "daily" | "weekly"
+  string window_start = 3;  // ISO-8601 UTC
+  string window_end = 4;    // ISO-8601 UTC
+}
+
+// AnalyzeResponse: enriquecimiento que se inserta en report.data_analysis.
+// fields es un mapa abierto para no acoplar al esquema interno de data-analysis.
+message AnalyzeResponse {
+  string trend = 1;          // ej. "accelerating"
+  string model_version = 2;
+  map<string, string> fields = 3;
+}

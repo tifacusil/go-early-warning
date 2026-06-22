@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 GO ?= go
 
-.PHONY: help build test lint vet contract-validate tidy ci
+.PHONY: help build test lint vet contract-validate proto tidy ci
 
 help: ## Lista los targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-18s %s\n", $$1, $$2}'
@@ -20,6 +20,9 @@ lint: ## golangci-lint (si está instalado)
 
 contract-validate: ## Valida examples vs schemas (Hito 1)
 	$(GO) run ./tools/contract-validate
+
+proto: ## Genera stubs gRPC desde contracts/proto (requiere buf + protoc-gen-go[-grpc])
+	cd contracts/proto && buf lint && buf generate
 
 tidy: ## go mod tidy
 	$(GO) mod tidy

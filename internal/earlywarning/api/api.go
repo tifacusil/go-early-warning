@@ -5,7 +5,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -17,49 +16,44 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/cache"
+	dav1 "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/dataanalysis/v1"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/store"
-	"github.com/AngelloFD/go-early-warning/pkg/httpx"
+	"github.com/AngelloFD/go-early-warning/pkg/grpcx"
 	"github.com/AngelloFD/go-early-warning/pkg/metrics"
 )
 
 // Deps bundles the API's collaborators.
 type Deps struct {
-	Service          string
-	Cache            *cache.Cache
-	Store            *store.Store
-	DataAnalysisURL  string
-	DataAnalysisTO   time.Duration
-	// Circuit-breaker tuning for the data-analysis call (CLAUDE.md §2.3).
-	BreakerThreshold int
-	BreakerResetFor  time.Duration
-	Metrics          *metrics.Metrics // optional; nil disables /metrics + instrumentation
-	Log              *slog.Logger
+	Service string
+	Cache   *cache.Cache
+	Store   *store.Store
+	// data-analysis gRPC client + resilient caller (breaker/retry/timeout).
+	// DataAnalysis may be nil to disable enrichment.
+	DataAnalysis   dav1.AnalysisServiceClient
+	DataAnalysisDo *grpcx.Caller
+	Metrics        *metrics.Metrics // optional; nil disables /metrics + instrumentation
+	Log            *slog.Logger
 	// HealthProbes are named connectivity checks (mysql, rabbitmq, redis).
 	HealthProbes map[string]func(ctx context.Context) error
 }
 
-// Server holds the API dependencies and a resilient client for data-analysis.
+// Server holds the API dependencies.
 type Server struct {
-	d  Deps
-	da *httpx.Client // breaker + retry + timeout
+	d Deps
 }
 
 // New builds a Server.
 func New(d Deps) *Server {
-	to := d.DataAnalysisTO
-	if to <= 0 {
-		to = 5 * time.Second
-	}
-	return &Server{d: d, da: httpx.New(httpx.Options{
-		Timeout:       to,
-		MaxRetries:    2,
-		FailThreshold: d.BreakerThreshold,
-		OpenFor:       d.BreakerResetFor,
-	})}
+	return &Server{d: d}
 }
 
 // DataAnalysisState exposes the breaker state for /metrics & /health (§2.3).
-func (s *Server) DataAnalysisState() string { return s.da.State().String() }
+func (s *Server) DataAnalysisState() string {
+	if s.d.DataAnalysisDo == nil {
+		return "closed"
+	}
+	return s.d.DataAnalysisDo.State().String()
+}
 
 // Routes registers all handlers on a fresh mux and returns it.
 func (s *Server) Routes() *http.ServeMux {
@@ -220,39 +214,36 @@ func (s *Server) GenerateReport(ctx context.Context, projectID, period string) (
 	return report, nil
 }
 
-// enrich calls data-analysis through the circuit breaker. Returns nil on any
-// failure OR when the breaker is open — the report is still produced from simple
-// threshold data (degradation a umbral simple, continuidad operativa §2.3).
+// enrich calls data-analysis over gRPC through the circuit breaker. Returns nil
+// on any failure OR when the breaker is open — the report is still produced from
+// simple threshold data (degradación a umbral simple, continuidad operativa §2.3).
 func (s *Server) enrich(ctx context.Context, projectID, period, windowStart, windowEnd string) map[string]any {
-	if s.d.DataAnalysisURL == "" {
+	if s.d.DataAnalysis == nil || s.d.DataAnalysisDo == nil {
 		return nil
 	}
-	payload, _ := json.Marshal(map[string]string{
-		"project_id": projectID, "period": period,
-		"window_start": windowStart, "window_end": windowEnd,
+	var resp *dav1.AnalyzeResponse
+	err := s.d.DataAnalysisDo.Invoke(ctx, func(c context.Context) error {
+		var e error
+		resp, e = s.d.DataAnalysis.Analyze(c, &dav1.AnalyzeRequest{
+			ProjectId:   projectID,
+			Period:      period,
+			WindowStart: windowStart,
+			WindowEnd:   windowEnd,
+		})
+		return e
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.d.DataAnalysisURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.da.Do(req)
 	if s.d.Metrics != nil {
-		s.d.Metrics.BreakerState.WithLabelValues("data-analysis").Set(float64(s.da.State()))
+		s.d.Metrics.BreakerState.WithLabelValues("data-analysis").Set(float64(s.d.DataAnalysisDo.State()))
 	}
 	if err != nil {
-		if err == httpx.ErrCircuitOpen {
+		if err == grpcx.ErrCircuitOpen {
 			s.d.Log.Warn("data_analysis_circuit_open", slog.String("project", projectID))
 		}
 		return nil // degradación: reporte sin data_analysis
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return nil
-	}
-	var out map[string]any
-	if json.NewDecoder(resp.Body).Decode(&out) != nil {
-		return nil
+	out := map[string]any{"trend": resp.GetTrend(), "model_version": resp.GetModelVersion()}
+	for k, v := range resp.GetFields() {
+		out[k] = v
 	}
 	return out
 }

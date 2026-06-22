@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+// user-management: suscripciones de notificacion consumidas por early-warning
+// para resolver tokens FCM destino. Llamada sincrona gRPC con timeout + retry
+// + circuit breaker (CLAUDE.md §1.5).
+package usermanagement.v1;
+
+option go_package = "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/usermanagement/v1;usermanagementv1";
+
+// SubscriptionService lista suscripciones por proyecto.
+service SubscriptionService {
+  rpc GetSubscriptions(GetSubscriptionsRequest) returns (GetSubscriptionsResponse);
+}
+
+message GetSubscriptionsRequest {
+  string project_id = 1;
+}
+
+message GetSubscriptionsResponse {
+  repeated Subscription subscriptions = 1;
+}
+
+message Subscription {
+  string id = 1;
+  string project_id = 2;
+  bool push_enabled = 3;
+  string min_alert_level = 4;     // "blue" | "orange" | "red"
+  string quiet_hours_start = 5;   // "HH:MM:SS" (vacio = sin quiet hours)
+  string quiet_hours_end = 6;
+  repeated string fcm_tokens = 7;
+}

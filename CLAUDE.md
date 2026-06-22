@@ -8,8 +8,8 @@
 
 - Sistema de monitoreo y alerta temprana de deslizamientos de tierra, originalmente descrito en Bai et al. (2020), reescrito en **Go**.
 - Arquitectura de 6 microservicios: `data-receiving`, `data-management`, `data-analysis`, `early-warning`, `user-management`, `project-management`.
-- Comunicación asíncrona vía **RabbitMQ** (pub/sub, at-least-once delivery), comunicación síncrona vía **HTTP/REST**, y registro/descubrimiento vía **Consul**.
-- Contratos de datos definidos en `contracts/schemas/*.schema.json` (JSON Schema Draft 2020-12), con `schema_version` semántico en el envelope.
+- Comunicación asíncrona vía **RabbitMQ** (pub/sub, at-least-once delivery), comunicación síncrona entre servicios vía **gRPC** (contratos `.proto`), y registro/descubrimiento vía **Consul**. La API HTTP/REST se mantiene solo para endpoints externos/operacionales (health, métricas, consultas del cliente).
+- Contratos: mensajes RabbitMQ en `contracts/schemas/*.schema.json` (JSON Schema Draft 2020-12, `schema_version` semántico en el envelope); llamadas síncronas gRPC en `contracts/proto/**/*.proto` (paquetes versionados `*.v1`).
 - El objetivo de la reescritura es validar empíricamente que la aplicación de buenas prácticas SE mejora rendimiento (throughput, latencia, CPU, memoria) frente al sistema baseline, siguiendo el marco de El Fellah et al. (2026).
 
 ---
@@ -18,14 +18,14 @@
 
 Estos principios aplican a **todo** código generado, sin importar el microservicio:
 
-1. **Contract-first siempre.** Ningún servicio publica o consume un mensaje de RabbitMQ, ni expone/consume un endpoint HTTP, sin que exista primero un JSON Schema (para mensajes) o una definición OpenAPI (para HTTP) en `contracts/`. Si el contrato no existe, Claude debe crearlo o pedirlo antes de escribir el handler.
-2. **Database-per-service.** Cada microservicio accede únicamente a su propio esquema/base de datos. Si una tarea requiere que un servicio lea datos que "pertenecen" a otro, la solución correcta es una llamada HTTP o un evento, **no** una query directa a la tabla de otro servicio. Señalar explícitamente si el sistema actual (MySQL único compartido) viola esto, y proponer la migración incremental (Strangler Fig) en lugar de ignorarlo.
+1. **Contract-first siempre.** Ningún servicio publica/consume un mensaje de RabbitMQ, ni expone/consume un servicio gRPC o endpoint HTTP, sin que exista primero el contrato en `contracts/`: JSON Schema (mensajes), `.proto` (gRPC síncrono), u OpenAPI (HTTP externo). Si el contrato no existe, Claude debe crearlo o pedirlo antes de escribir el handler.
+2. **Database-per-service.** Cada microservicio accede únicamente a su propio esquema/base de datos. Si una tarea requiere que un servicio lea datos que "pertenecen" a otro, la solución correcta es una llamada gRPC o un evento, **no** una query directa a la tabla de otro servicio. Señalar explícitamente si el sistema actual (MySQL único compartido) viola esto, y proponer la migración incremental (Strangler Fig) en lugar de ignorarlo.
 3. **Idempotencia en todos los consumidores.** Cualquier consumidor de RabbitMQ (Data Management, Early Warning, y Data Receiving si actúa como productor con reintentos) debe deduplicar por `message_id` o por hash del payload antes de procesar. Nunca asumir entrega exactly-once.
 4. **Versionado semántico de contratos.** Cambios de campo siguen la regla ya definida en `tarea-0-contratos.md`: aditivo y opcional → minor; incompatible → major con período de gracia de aceptación de la versión anterior.
-5. **Resiliencia explícita en llamadas síncronas.** Toda llamada HTTP entre servicios (ej. Early Warning → Data Analysis) debe implementar:
+5. **Resiliencia explícita en llamadas síncronas.** Toda llamada gRPC entre servicios (ej. Early Warning → Data Analysis, → User Management) debe implementar:
    - **Circuit breaker** (abrir el circuito tras N fallos consecutivos, half-open para probar recuperación).
    - **Retry con backoff exponencial** (nunca retry inmediato ni infinito).
-   - **Timeout explícito** (nunca usar el default del cliente HTTP sin configurar).
+   - **Timeout explícito** (context con deadline por llamada; nunca el default del cliente).
 6. **Health checks reales.** `/health` debe verificar conectividad real a RabbitMQ y a la base de datos del servicio, no solo responder `200 OK` estático.
 7. **Configuración externalizada.** Nunca hardcodear hosts, puertos, credenciales o nombres de colas/exchanges. Todo via variables de entorno o Consul KV, siguiendo la convención de `tarea-0-contratos.md`.
 8. **Logging estructurado con correlation ID.** Todo log debe ser JSON estructurado e incluir el `message_id` (o un `trace_id` derivado) para poder seguir un mensaje a través de Data Receiving → RabbitMQ → consumidores.
@@ -77,8 +77,8 @@ Si Claude detecta que una de estas capas falta para un componente que está modi
 
 | Patrón | Dónde aplica | Comportamiento esperado |
 |---|---|---|
-| Circuit Breaker | Early Warning → Data Analysis (HTTP) | Abre tras N fallos; degradación a umbral simple mientras está abierto |
-| Retry + backoff exponencial | Consumidores RabbitMQ, llamadas HTTP salientes | Máx 3 intentos, backoff 1s/5s/30s, luego DLQ |
+| Circuit Breaker | Early Warning → Data Analysis (gRPC) | Abre tras N fallos; degradación a umbral simple mientras está abierto |
+| Retry + backoff exponencial | Consumidores RabbitMQ, llamadas gRPC salientes | Máx 3 intentos, backoff 1s/5s/30s, luego DLQ |
 | Dead Letter Queue | Todos los consumidores | `sensors.dlx` → `sensors.dead_letter`, con alerta a monitoring |
 | Publisher Confirms | Data Receiving | Confirmar antes de borrar buffer de Redis |
 | Idempotent Consumer | Data Management, Early Warning | Deduplicación por `message_id` |
@@ -98,9 +98,9 @@ No se requiere implementar **Bulkhead** de forma aislada salvo que se identifiqu
 
 ## 6. Al generar código nuevo, Claude debe siempre
 
-1. Verificar si existe un contrato (`contracts/schemas/*.schema.json` u OpenAPI) para el mensaje/endpoint en cuestión. Si no existe, proponer su definición primero.
+1. Verificar si existe un contrato (`contracts/schemas/*.schema.json`, `contracts/proto/**/*.proto`, u OpenAPI) para el mensaje/RPC/endpoint en cuestión. Si no existe, proponer su definición primero.
 2. Aplicar idempotencia en cualquier punto que consuma de RabbitMQ.
-3. Aplicar circuit breaker + retry + timeout en cualquier llamada HTTP saliente entre servicios.
+3. Aplicar circuit breaker + retry + timeout en cualquier llamada gRPC saliente entre servicios.
 4. Externalizar toda configuración (variables de entorno / Consul KV).
 5. Incluir health check real y registro en Consul siguiendo la convención de `tarea-0-contratos.md` (nombres `<service-name>-<n>`, tags `version-`, `lang-`, `env-`).
 6. Generar al menos el esqueleto de unit tests y contract tests para el código nuevo.

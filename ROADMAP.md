@@ -43,8 +43,8 @@ go-early-warning/
 │
 ├── contracts/
 │   ├── schemas/                    # JSON Schema 2020-12: sensor_reading, alert, report
-│   ├── openapi/                    # early-warning.yaml + contratos consumidos
-│   │                               #   (data-analysis, user-management)
+│   ├── proto/                      # gRPC síncrono: dataanalysis/v1, usermanagement/v1
+│   ├── openapi/                    # early-warning.yaml (API HTTP externa)
 │   └── examples/                   # ejemplos validados en CI
 │
 ├── cmd/
@@ -54,15 +54,17 @@ go-early-warning/
 │   ├── threshold/                  # lógica pura, sin I/O (port threshold_engine.py)
 │   ├── consumer/                   # RabbitMQ: dedup + DLQ + fan-out
 │   ├── publisher/                  # alertas: AMQP + HTTP + FCM (firebase.go)
-│   ├── subs/                       # cliente user-management (tokens FCM, quiet hours)
+│   ├── subs/                       # cliente gRPC user-management (tokens FCM, quiet hours)
+│   ├── grpc/                       # stubs gRPC generados (dataanalysis/v1, usermanagement/v1)
 │   ├── cache/                      # Redis
 │   ├── store/                      # MySQL (alerts, reports)
-│   └── api/                        # handlers HTTP + /metrics + scheduler
+│   └── api/                        # handlers HTTP + /metrics + scheduler; enrich gRPC data-analysis
 │
 ├── pkg/                            # libs (reutilizables por otros servicios del sistema)
 │   ├── logging/                    # slog JSON + trace_id
 │   ├── config/                     # env
-│   ├── httpx/                      # timeout + circuit breaker + retry
+│   ├── grpcx/                      # gRPC: timeout + circuit breaker + retry
+│   ├── httpx/                      # HTTP: timeout + circuit breaker + retry
 │   ├── idempotency/                # dedup por message_id (Redis SET NX)
 │   ├── metrics/                    # Prometheus
 │   ├── consul/                     # register / deregister
@@ -107,7 +109,8 @@ go-early-warning/
   - [x] `alert` (mensaje publicado a `alerts.<project>.<level>`): derivado del alert dict de `threshold_engine.py:132`.
   - [x] `report` (entidad de reportes daily/weekly).
 - [x] `contracts/openapi/early-warning.yaml` — port del `_openapi_spec()` de `app.py`: `/health`, `/alerts/recent`, `/reports/latest`, `/reports/generate`.
-- [x] OpenAPI para los servicios síncronos consumidos: `data-analysis` (endpoint que enriquece reporte), `user-management` (`/api/v1/users/subscriptions`).
+- [x] OpenAPI de la API HTTP externa de early-warning (health, reportes, alertas).
+- [x] **gRPC** `.proto` para las llamadas síncronas salientes (CLAUDE.md §0): `contracts/proto/dataanalysis/v1` (`AnalysisService.Analyze`), `contracts/proto/usermanagement/v1` (`SubscriptionService.GetSubscriptions`). Stubs vía `buf generate` (`make proto`).
 - [x] `contracts/examples/` — mensajes ejemplo válidos por schema.
 - [x] `contract-validate` tool (Go) — valida examples contra schemas + regla envelope `schema_version` major.minor (CLAUDE.md §1.4). Unit test incluido.
 
@@ -186,7 +189,7 @@ go-early-warning/
 
 `go-early-warning` implementa **un** microservicio. Lo siguiente pertenece al sistema completo (otros repos / `tesis-infra`), no aquí:
 
-- **Otros 5 microservicios** — `data-receiving`, `data-management`, `data-analysis`, `user-management`, `project-management`. Cada uno su propio repo/imagen, reutilizando el patrón de `pkg/` de este servicio. `early-warning` ya los consume vía contratos (`contracts/openapi/`) y env (`DATA_ANALYSIS_URL`, `USER_MANAGEMENT_URL`).
+- **Otros 5 microservicios** — `data-receiving`, `data-management`, `data-analysis`, `user-management`, `project-management`. Cada uno su propio repo/imagen, reutilizando el patrón de `pkg/` de este servicio. `early-warning` ya los consume vía contratos `.proto` (`contracts/proto/`) y env (`DATA_ANALYSIS_GRPC`, `USER_MANAGEMENT_GRPC`). **Pendiente lado servidor:** `data-analysis` y `user-management` deben exponer servidores gRPC (`AnalysisService`, `SubscriptionService`) en `:9090`; hoy en infra solo exponen HTTP, así que el breaker de early-warning estará abierto hasta que implementen gRPC.
 - **CDCT (Pact / `pact-go`)** — requiere la contraparte (productor/consumidor del otro lado). Se monta cuando exista el servicio par.
 - **Benchmark Go vs. Python** (El Fellah et al. 2026) — validación empírica cross-repo a nivel tesis; se corre sobre el sistema desplegado por `tesis-infra`, no desde este repo.
 - **`project-management` para umbrales** — hoy `staticLevels` provisional en `cmd/` (`// TODO(SE-practice):`); migra a cliente HTTP cuando exista ese servicio.
