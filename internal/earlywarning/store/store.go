@@ -126,10 +126,10 @@ func (s *Store) ReportExists(ctx context.Context, projectID, period string, wind
 
 // AlertSummary aggregates alerts in a window for report generation.
 type AlertSummary struct {
-	Total      int            `json:"total"`
-	ByLevel    map[string]int `json:"by_level"`
-	MaxSpeed   *float64       `json:"max_speed_mm_day"`
-	AvgSpeed   *float64       `json:"avg_speed_mm_day"`
+	Total    int            `json:"total"`
+	ByLevel  map[string]int `json:"by_level"`
+	MaxSpeed *float64       `json:"max_speed_mm_day"`
+	AvgSpeed *float64       `json:"avg_speed_mm_day"`
 }
 
 // SummarizeAlerts ports summarize_alerts_db: counts + speed stats by level.

@@ -21,9 +21,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/api"
-	dav1 "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/dataanalysis/v1"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/cache"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/consumer"
+	dav1 "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/dataanalysis/v1"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/publisher"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/store"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/subs"
@@ -38,8 +38,12 @@ import (
 
 const serviceName = "early-warning"
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	log := logging.New(serviceName, config.String("INSTANCE_ID", "ew-1"), config.String("LOG_LEVEL", "info"))
+	log.Info("starting", "version", version)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

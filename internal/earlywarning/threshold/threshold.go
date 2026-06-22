@@ -27,17 +27,17 @@ type Reading struct {
 
 // Alert mirrors contracts/schemas/alert.schema.json.
 type Alert struct {
-	SchemaVersion           string  `json:"schema_version"`
-	MessageID               string  `json:"message_id"`
-	ProjectID               string  `json:"project_id"`
-	SensorID                string  `json:"sensor_id"`
-	AlertType               string  `json:"alert_type"`
-	AlertLevel              string  `json:"alert_level"`
-	DeformationSpeedMMDay   float64 `json:"deformation_speed_mm_day"`
-	CurrentDisplacementMM   float64 `json:"current_displacement_mm"`
-	PreviousDisplacementMM  float64 `json:"previous_displacement_mm"`
-	ThresholdMMDay          float64 `json:"threshold_mm_day"`
-	Timestamp               string  `json:"timestamp"`
+	SchemaVersion          string  `json:"schema_version"`
+	MessageID              string  `json:"message_id"`
+	ProjectID              string  `json:"project_id"`
+	SensorID               string  `json:"sensor_id"`
+	AlertType              string  `json:"alert_type"`
+	AlertLevel             string  `json:"alert_level"`
+	DeformationSpeedMMDay  float64 `json:"deformation_speed_mm_day"`
+	CurrentDisplacementMM  float64 `json:"current_displacement_mm"`
+	PreviousDisplacementMM float64 `json:"previous_displacement_mm"`
+	ThresholdMMDay         float64 `json:"threshold_mm_day"`
+	Timestamp              string  `json:"timestamp"`
 }
 
 // Result is the outcome of evaluating one message.

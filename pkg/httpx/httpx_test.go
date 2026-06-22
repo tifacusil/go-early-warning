@@ -13,7 +13,7 @@ func newTestClient(o Options) (*Client, *time.Time) {
 	now := time.Unix(0, 0)
 	p := &now
 	c.now = func() time.Time { return *p } // reads through pointer so tests can advance time
-	c.sleep = func(time.Duration) {}        // no real waiting in tests
+	c.sleep = func(time.Duration) {}       // no real waiting in tests
 	return c, p
 }
 

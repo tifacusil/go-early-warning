@@ -35,11 +35,11 @@ func (s State) String() string {
 
 // Options configures a resilient client.
 type Options struct {
-	Timeout      time.Duration // explicit per-request timeout (required)
-	MaxRetries   int           // additional attempts after the first
-	Backoff      []time.Duration
-	FailThreshold int          // consecutive failures before the breaker opens
-	OpenFor      time.Duration // cool-down before half-open probe
+	Timeout       time.Duration // explicit per-request timeout (required)
+	MaxRetries    int           // additional attempts after the first
+	Backoff       []time.Duration
+	FailThreshold int           // consecutive failures before the breaker opens
+	OpenFor       time.Duration // cool-down before half-open probe
 }
 
 // DefaultBackoff matches the CLAUDE.md §4 schedule: 1s / 5s / 30s.
@@ -55,7 +55,7 @@ type Client struct {
 	failures int
 	openedAt time.Time
 
-	now   func() time.Time   // injectable for tests
+	now   func() time.Time    // injectable for tests
 	sleep func(time.Duration) // injectable for tests
 }
 

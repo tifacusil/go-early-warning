@@ -89,10 +89,10 @@ func TestSpeedAndLevels(t *testing.T) {
 		wantLevel string
 		wantAlert bool
 	}{
-		{"below blue", 0.4, "", false},     // 9.6 mm/day < 10
-		{"blue", 0.5, "blue", true},        // 12 mm/day
-		{"orange", 0.7, "orange", true},    // 16.8 mm/day
-		{"red", 0.9, "red", true},          // 21.6 mm/day
+		{"below blue", 0.4, "", false},  // 9.6 mm/day < 10
+		{"blue", 0.5, "blue", true},     // 12 mm/day
+		{"orange", 0.7, "orange", true}, // 16.8 mm/day
+		{"red", 0.9, "red", true},       // 21.6 mm/day
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

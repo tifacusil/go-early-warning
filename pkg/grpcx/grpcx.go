@@ -39,11 +39,11 @@ func (s State) String() string {
 
 // Options configures a resilient gRPC caller.
 type Options struct {
-	Timeout       time.Duration   // explicit per-call timeout (required)
-	MaxRetries    int             // additional attempts after the first
+	Timeout       time.Duration // explicit per-call timeout (required)
+	MaxRetries    int           // additional attempts after the first
 	Backoff       []time.Duration
-	FailThreshold int             // consecutive failures before the breaker opens
-	OpenFor       time.Duration   // cool-down before half-open probe
+	FailThreshold int           // consecutive failures before the breaker opens
+	OpenFor       time.Duration // cool-down before half-open probe
 }
 
 // DefaultBackoff matches the CLAUDE.md §4 schedule: 1s / 5s / 30s.
