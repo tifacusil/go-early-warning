@@ -214,7 +214,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 func amqpURL() string {
 	return "amqp://" +
 		config.String("RABBITMQ_USER", "guest") + ":" +
-		config.String("RABBITMQ_PASS", "guest") + "@" +
+		config.String("RABBITMQ_PASSWORD", "guest") + "@" +
 		config.String("RABBITMQ_HOST", "127.0.0.1") + ":" +
 		strconv.Itoa(config.Int("RABBITMQ_PORT", 5672)) + "/"
 }
