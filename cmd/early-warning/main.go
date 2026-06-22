@@ -75,7 +75,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// --- Migraciones (idempotentes; golang-migrate salta las aplicadas) ---
 	if config.Bool("RUN_MIGRATIONS", true) {
@@ -91,7 +91,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer consumeConn.Close()
+	defer func() { _ = consumeConn.Close() }()
 	consumeCh, err := consumeConn.Channel()
 	if err != nil {
 		return err
@@ -100,7 +100,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer publishConn.Close()
+	defer func() { _ = publishConn.Close() }()
 	publishCh, err := publishConn.Channel()
 	if err != nil {
 		return err
@@ -127,7 +127,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer umConn.Close()
+	defer func() { _ = umConn.Close() }()
 	resolver := subs.New(umConn, grpcx.New(grpcx.Options{
 		Timeout:       time.Duration(config.Int("USER_MANAGEMENT_TIMEOUT_MS", 5000)) * time.Millisecond,
 		MaxRetries:    2,
@@ -170,7 +170,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer daConn.Close()
+	defer func() { _ = daConn.Close() }()
 	daClient := dav1.NewAnalysisServiceClient(daConn)
 	daCaller := grpcx.New(grpcx.Options{
 		Timeout:       time.Duration(config.Int("DATA_ANALYSIS_TIMEOUT_MS", 5000)) * time.Millisecond,

@@ -34,7 +34,7 @@ func TestRetriesOn5xxThenSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
@@ -58,7 +58,7 @@ func TestBreakerOpensAndRejects(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 		resp, _ := c.Do(req)
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}
 	if c.State() != StateOpen {

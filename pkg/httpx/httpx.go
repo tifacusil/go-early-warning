@@ -137,7 +137,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		if attempt > 0 {
 			c.sleep(c.backoffFor(attempt - 1))
 			if resp != nil {
-				resp.Body.Close() // drop the previous failed response before retry
+				_ = resp.Body.Close() // drop the previous failed response before retry
 			}
 		}
 		resp, err = c.http.Do(req)

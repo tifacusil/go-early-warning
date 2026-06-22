@@ -125,7 +125,10 @@ func (c *Caller) Invoke(ctx context.Context, fn func(context.Context) error) err
 	attempts := c.opts.MaxRetries + 1
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
-			c.sleep(c.backoffFor(attempt - 1))
+			if err := c.wait(ctx, c.backoffFor(attempt-1)); err != nil {
+				c.onResult(false)
+				return err
+			}
 		}
 		callCtx, cancel := context.WithTimeout(ctx, c.opts.Timeout)
 		err = fn(callCtx)
@@ -141,6 +144,19 @@ func (c *Caller) Invoke(ctx context.Context, fn func(context.Context) error) err
 	}
 	c.onResult(false)
 	return err
+}
+
+// wait sleeps for d but returns early if ctx is cancelled, so a backoff never
+// blocks shutdown or outlives the caller's deadline. Tests stub c.sleep to skip.
+func (c *Caller) wait(ctx context.Context, d time.Duration) error {
+	done := make(chan struct{})
+	go func() { c.sleep(d); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *Caller) backoffFor(i int) time.Duration {

@@ -120,11 +120,13 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	log := logging.FromContext(ctx, c.d.Log)
 
 	// Idempotent consumer: skip messages already processed (CLAUDE.md §1.3, §2.2).
+	// Mark happens AFTER success, so a failed+requeued message is not skipped on
+	// redelivery and the retry/DLQ path stays reachable.
 	if c.d.Idemp != nil && wm.MessageID != "" {
-		first, err := c.d.Idemp.Seen(ctx, wm.MessageID)
+		done, err := c.d.Idemp.Done(ctx, wm.MessageID)
 		if err != nil {
 			log.Warn("idemp_check_failed", slog.String("err", err.Error()))
-		} else if !first {
+		} else if done {
 			log.Info("duplicate_skipped")
 			if m := c.m(); m != nil {
 				m.Duplicates.Inc()
@@ -137,6 +139,11 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	if err := c.process(ctx, log, wm); err != nil {
 		c.retryOrDeadLetter(ctx, log, d, wm.MessageID, err)
 		return
+	}
+	if c.d.Idemp != nil && wm.MessageID != "" {
+		if err := c.d.Idemp.MarkDone(ctx, wm.MessageID); err != nil {
+			log.Warn("idemp_mark_failed", slog.String("err", err.Error()))
+		}
 	}
 	_ = d.Ack(false)
 }

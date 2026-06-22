@@ -10,11 +10,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Store records seen message IDs.
+// Store records successfully-processed message IDs. A message is marked done
+// only AFTER processing succeeds, so a failed+requeued message is not mistaken
+// for a duplicate on redelivery (the retry/DLQ path stays alive).
 type Store interface {
-	// Seen atomically marks messageID as seen and reports whether this is the
-	// first time. first=false means a duplicate that must be skipped.
-	Seen(ctx context.Context, messageID string) (first bool, err error)
+	// Done reports whether messageID was already processed successfully.
+	Done(ctx context.Context, messageID string) (bool, error)
+	// MarkDone records messageID as processed. Call after process() succeeds.
+	MarkDone(ctx context.Context, messageID string) error
 }
 
 // RedisStore implements Store with SET NX EX: the first writer wins, the key
@@ -36,7 +39,13 @@ func NewRedisStore(c *redis.Client, prefix string, ttl time.Duration) *RedisStor
 	return &RedisStore{c: c, prefix: prefix, ttl: ttl}
 }
 
-// Seen sets prefix+messageID only if absent. ok==true => first occurrence.
-func (s *RedisStore) Seen(ctx context.Context, messageID string) (bool, error) {
-	return s.c.SetNX(ctx, s.prefix+messageID, "1", s.ttl).Result()
+// Done reports whether prefix+messageID exists (already processed).
+func (s *RedisStore) Done(ctx context.Context, messageID string) (bool, error) {
+	n, err := s.c.Exists(ctx, s.prefix+messageID).Result()
+	return n > 0, err
+}
+
+// MarkDone sets prefix+messageID with TTL so the dedup window self-expires.
+func (s *RedisStore) MarkDone(ctx context.Context, messageID string) error {
+	return s.c.Set(ctx, s.prefix+messageID, "1", s.ttl).Err()
 }

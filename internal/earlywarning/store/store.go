@@ -145,7 +145,7 @@ func (s *Store) SummarizeAlerts(ctx context.Context, projectID string, windowSta
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sumAvg float64
 	var sumCnt int
@@ -159,6 +159,7 @@ func (s *Store) SummarizeAlerts(ctx context.Context, projectID string, windowSta
 		if _, ok := out.ByLevel[level]; ok {
 			out.ByLevel[level] = cnt
 		}
+		out.Total += cnt
 		if maxSpeed.Valid {
 			if out.MaxSpeed == nil || maxSpeed.Float64 > *out.MaxSpeed {
 				v := maxSpeed.Float64
@@ -173,7 +174,6 @@ func (s *Store) SummarizeAlerts(ctx context.Context, projectID string, windowSta
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	out.Total = out.ByLevel["blue"] + out.ByLevel["orange"] + out.ByLevel["red"]
 	if sumCnt > 0 {
 		v := sumAvg / float64(sumCnt)
 		out.AvgSpeed = &v

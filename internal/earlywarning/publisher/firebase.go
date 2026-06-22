@@ -6,11 +6,16 @@ package publisher
 import (
 	"context"
 	"encoding/json"
+	"os"
 
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 )
+
+// fcmScope is the OAuth2 scope FCM v1 requires.
+const fcmScope = "https://www.googleapis.com/auth/firebase.messaging"
 
 // FirebaseConfig holds FCM credentials (externalized, CLAUDE.md §1.7).
 type FirebaseConfig struct {
@@ -32,18 +37,27 @@ func (noopPusher) Push(context.Context, string, string, map[string]string, []str
 // NewFirebasePusher builds an FCM pusher. If no credentials are present it
 // returns a no-op pusher (nil error), matching the Python "skip if unconfigured".
 func NewFirebasePusher(ctx context.Context, cfg FirebaseConfig) (Pusher, error) {
-	var opt option.ClientOption
+	var raw []byte
 	switch {
 	case cfg.CredentialsPath != "":
-		opt = option.WithCredentialsFile(cfg.CredentialsPath)
-	case cfg.CredentialsJSON != "":
-		if !json.Valid([]byte(cfg.CredentialsJSON)) {
-			return noopPusher{}, nil
+		b, err := os.ReadFile(cfg.CredentialsPath)
+		if err != nil {
+			return nil, err
 		}
-		opt = option.WithCredentialsJSON([]byte(cfg.CredentialsJSON))
+		raw = b
+	case cfg.CredentialsJSON != "":
+		raw = []byte(cfg.CredentialsJSON)
 	default:
 		return noopPusher{}, nil
 	}
+	if !json.Valid(raw) {
+		return noopPusher{}, nil
+	}
+	creds, err := google.CredentialsFromJSON(ctx, raw, fcmScope)
+	if err != nil {
+		return nil, err
+	}
+	opt := option.WithCredentials(creds)
 
 	app, err := firebase.NewApp(ctx, nil, opt)
 	if err != nil {
