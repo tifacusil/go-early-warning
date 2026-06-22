@@ -1,7 +1,9 @@
 // Package store is the MySQL persistence for early-warning (alerts + reports),
-// ported from the MySQL half of redis_cache.py. Schema lives in
-// migrations/early_warning (golang-migrate); this package never creates tables
-// at runtime (CLAUDE.md §2.4). Database-per-service (§1.2).
+// ported from the MySQL half of redis_cache.py. The versioned schema lives in
+// store/migrations (embedded) and is applied via golang-migrate at startup
+// (Migrate); migrations are idempotent and tracked in schema_migrations, so the
+// service never issues ad-hoc DDL in request paths (CLAUDE.md §2.4).
+// Database-per-service (§1.2).
 package store
 
 import (

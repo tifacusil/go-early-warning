@@ -5,6 +5,7 @@ go 1.26
 require (
 	firebase.google.com/go/v4 v4.20.0
 	github.com/go-sql-driver/mysql v1.10.0
+	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/consul/api v1.34.3
 	github.com/prometheus/client_golang v1.23.2

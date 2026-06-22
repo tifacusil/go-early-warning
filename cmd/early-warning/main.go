@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -71,6 +72,14 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 	defer st.Close()
+
+	// --- Migraciones (idempotentes; golang-migrate salta las aplicadas) ---
+	if config.Bool("RUN_MIGRATIONS", true) {
+		if err := st.Migrate(); err != nil {
+			return fmt.Errorf("migrations: %w", err)
+		}
+		log.Info("migrations_applied")
+	}
 
 	// --- RabbitMQ (separate connections for consume and publish) ---
 	amqpURL := amqpURL()
