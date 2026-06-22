@@ -1,14 +1,11 @@
-name: cd
-
-# Continuous Delivery: publica la imagen del servicio en GHCR.
-# Concepto CD = entregar un artefacto desplegable de forma automática y
-# reproducible tras integrar. Se ejecuta al hacer push a main (canal :edge) y al
-# etiquetar una release vX.Y.Z (canal versionado + :latest).
+name: CD — Publish image to GHCR
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI — Build, test & lint"]
+    types: [completed]
     branches: [main]
-    tags: ['v*.*.*']
+  workflow_dispatch:
 
 # Imagen alineada al compose de tesis-infra: ghcr.io/tifacusil/early-warning.
 # El owner GHCR es fijo (tifacusil), no el del repo, para que la imagen
@@ -25,59 +22,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Puerta de calidad: no se publica nada si build/test fallan.
-  verify:
+  build-and-push:
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
-          go-version: '1.26'
-          cache: true
-      - run: go build ./...
-      - run: go test ./...
+          # Publica exactamente el commit que CI verificó (no el HEAD de la rama).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-  publish:
-    needs: verify
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
-      - name: docker metadata (tags + labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            type=edge,branch=main
-            type=sha,format=short
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      # GITHUB_TOKEN solo publica paquetes bajo el owner del repo. Como la imagen
-      # vive en ghcr.io/tifacusil/* (owner distinto), se requiere un PAT con
-      # write:packages en ese owner, guardado como secret GHCR_TOKEN. Si el repo
-      # pasa a ser de tifacusil, basta GITHUB_TOKEN y username github.actor.
-      - name: login a GHCR
-        uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build & push (multi-arch)
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE }}:latest
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ github.event.workflow_run.head_sha || github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
