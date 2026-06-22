@@ -18,6 +18,7 @@ import (
 
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/cache"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/store"
+	"github.com/AngelloFD/go-early-warning/pkg/httpx"
 )
 
 // Deps bundles the API's collaborators.
@@ -27,15 +28,18 @@ type Deps struct {
 	Store            *store.Store
 	DataAnalysisURL  string
 	DataAnalysisTO   time.Duration
+	// Circuit-breaker tuning for the data-analysis call (CLAUDE.md §2.3).
+	BreakerThreshold int
+	BreakerResetFor  time.Duration
 	Log              *slog.Logger
 	// HealthProbes are named connectivity checks (mysql, rabbitmq, redis).
 	HealthProbes map[string]func(ctx context.Context) error
 }
 
-// Server holds the API dependencies and an HTTP client for data-analysis.
+// Server holds the API dependencies and a resilient client for data-analysis.
 type Server struct {
-	d    Deps
-	http *http.Client
+	d  Deps
+	da *httpx.Client // breaker + retry + timeout
 }
 
 // New builds a Server.
@@ -44,8 +48,16 @@ func New(d Deps) *Server {
 	if to <= 0 {
 		to = 5 * time.Second
 	}
-	return &Server{d: d, http: &http.Client{Timeout: to}}
+	return &Server{d: d, da: httpx.New(httpx.Options{
+		Timeout:       to,
+		MaxRetries:    2,
+		FailThreshold: d.BreakerThreshold,
+		OpenFor:       d.BreakerResetFor,
+	})}
 }
+
+// DataAnalysisState exposes the breaker state for /metrics & /health (§2.3).
+func (s *Server) DataAnalysisState() string { return s.da.State().String() }
 
 // Routes registers all handlers on a fresh mux and returns it.
 func (s *Server) Routes() *http.ServeMux {
@@ -191,8 +203,9 @@ func (s *Server) GenerateReport(ctx context.Context, projectID, period string) (
 	return report, nil
 }
 
-// enrich calls data-analysis; returns nil on any failure (degradation to simple
-// threshold — the report is still produced). Circuit breaker added in Hito 3.
+// enrich calls data-analysis through the circuit breaker. Returns nil on any
+// failure OR when the breaker is open — the report is still produced from simple
+// threshold data (degradation a umbral simple, continuidad operativa §2.3).
 func (s *Server) enrich(ctx context.Context, projectID, period, windowStart, windowEnd string) map[string]any {
 	if s.d.DataAnalysisURL == "" {
 		return nil
@@ -206,9 +219,12 @@ func (s *Server) enrich(ctx context.Context, projectID, period, windowStart, win
 		return nil
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.http.Do(req)
+	resp, err := s.da.Do(req)
 	if err != nil {
-		return nil
+		if err == httpx.ErrCircuitOpen {
+			s.d.Log.Warn("data_analysis_circuit_open", slog.String("project", projectID))
+		}
+		return nil // degradación: reporte sin data_analysis
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {

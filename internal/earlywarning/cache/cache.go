@@ -44,6 +44,9 @@ func New(cfg Config) *Cache {
 // Ping verifies connectivity (used by the /health probe, CLAUDE.md §1.6).
 func (k *Cache) Ping(ctx context.Context) error { return k.c.Ping(ctx).Err() }
 
+// Client exposes the underlying Redis client (e.g. for the idempotency store).
+func (k *Cache) Client() *redis.Client { return k.c }
+
 func lastKey(sensorID string) string { return "alarm:last:" + sensorID }
 
 // GetLastReading returns the stored baseline for a sensor, or nil if absent.
@@ -79,6 +82,20 @@ func (k *Cache) SetLastReading(ctx context.Context, sensorID string, r *threshol
 		return err
 	}
 	return k.c.Set(ctx, lastKey(sensorID), payload, 0).Err()
+}
+
+// IncrRetry increments the per-message retry counter (1h TTL so it self-cleans)
+// and returns the new count. Used by the consumer to bound requeues before DLQ.
+func (k *Cache) IncrRetry(ctx context.Context, messageID string) (int64, error) {
+	key := "early_warning:retry:" + messageID
+	n, err := k.c.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, err
+	}
+	if n == 1 {
+		_ = k.c.Expire(ctx, key, time.Hour).Err()
+	}
+	return n, nil
 }
 
 // IncrAlertsGenerated bumps and returns the lifetime alert counter.

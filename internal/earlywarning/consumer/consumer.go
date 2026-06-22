@@ -16,6 +16,7 @@ import (
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/publisher"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/store"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/threshold"
+	"github.com/AngelloFD/go-early-warning/pkg/idempotency"
 	"github.com/AngelloFD/go-early-warning/pkg/logging"
 )
 
@@ -31,15 +32,17 @@ type ThresholdProvider interface {
 
 // Deps bundles the consumer's collaborators.
 type Deps struct {
-	Channel   *amqp.Channel
-	Queue     string
-	Engine    threshold.Config
-	Cache     *cache.Cache
-	Store     *store.Store
-	Publisher *publisher.Publisher
-	Subs      SubscriptionResolver
-	Levels    ThresholdProvider
-	Log       *slog.Logger
+	Channel    *amqp.Channel
+	Queue      string
+	Engine     threshold.Config
+	Cache      *cache.Cache
+	Store      *store.Store
+	Publisher  *publisher.Publisher
+	Subs       SubscriptionResolver
+	Levels     ThresholdProvider
+	Idemp      idempotency.Store // dedup by message_id (CLAUDE.md §1.3)
+	MaxRetries int               // requeue attempts before dead-lettering (default 3)
+	Log        *slog.Logger
 }
 
 // Consumer drives one AMQP consume loop.
@@ -83,6 +86,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 }
 
+func (c *Consumer) maxRetries() int {
+	if c.d.MaxRetries <= 0 {
+		return 3
+	}
+	return c.d.MaxRetries
+}
+
+// handle decides ack / requeue / dead-letter based on process() outcome.
 func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	_ = c.d.Cache.SetLastMessageProcessedAt(ctx, time.Now().UTC().Format(time.RFC3339))
 
@@ -97,6 +108,28 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	ctx = logging.WithTraceID(ctx, wm.MessageID)
 	log := logging.FromContext(ctx, c.d.Log)
 
+	// Idempotent consumer: skip messages already processed (CLAUDE.md §1.3, §2.2).
+	if c.d.Idemp != nil && wm.MessageID != "" {
+		first, err := c.d.Idemp.Seen(ctx, wm.MessageID)
+		if err != nil {
+			log.Warn("idemp_check_failed", slog.String("err", err.Error()))
+		} else if !first {
+			log.Info("duplicate_skipped")
+			_ = d.Ack(false)
+			return
+		}
+	}
+
+	if err := c.process(ctx, log, wm); err != nil {
+		c.retryOrDeadLetter(ctx, log, d, wm.MessageID, err)
+		return
+	}
+	_ = d.Ack(false)
+}
+
+// process runs evaluation + side effects. Returns an error only for retryable
+// failures (persistence). Skips/alerts that succeed return nil.
+func (c *Consumer) process(ctx context.Context, log *slog.Logger, wm wireMessage) error {
 	m := parseMessage(wm)
 	var prev *threshold.Reading
 	if m.SensorID != "" {
@@ -108,7 +141,9 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	res := c.d.Engine.Evaluate(m, prev, c.d.Levels.Levels(m.ProjectID))
 
 	if res.Alert != nil {
-		c.dispatch(ctx, log, res.Alert)
+		if err := c.dispatch(ctx, log, res.Alert); err != nil {
+			return err // persistence failed -> retryable
+		}
 	}
 
 	if res.ShouldStoreCurrent && res.StorePayload != nil && m.SensorID != "" {
@@ -116,11 +151,29 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 			log.Warn("store_last_reading_failed", slog.String("err", err.Error()))
 		}
 	}
-
-	_ = d.Ack(false)
+	return nil
 }
 
-func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.Alert) {
+// retryOrDeadLetter requeues up to maxRetries, then nacks without requeue so the
+// queue's x-dead-letter-exchange (sensors.dlx, pre-declared in infra) routes the
+// message to sensors.dead_letter (CLAUDE.md §4).
+func (c *Consumer) retryOrDeadLetter(ctx context.Context, log *slog.Logger, d amqp.Delivery, messageID string, cause error) {
+	attempts := 1
+	if c.d.Idemp != nil && messageID != "" {
+		attempts = c.bumpRetry(ctx, messageID)
+	}
+	if attempts > c.maxRetries() {
+		log.Warn("dead_lettered", slog.Int("attempts", attempts), slog.String("err", cause.Error()))
+		_ = d.Nack(false, false) // -> DLX
+		return
+	}
+	log.Warn("requeue", slog.Int("attempt", attempts), slog.String("err", cause.Error()))
+	_ = d.Nack(false, true)
+}
+
+// dispatch fans the alert out. Persistence failure is returned as retryable;
+// best-effort side channels (publish/push/redis counters) only log.
+func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.Alert) error {
 	if err := c.d.Publisher.PublishRabbitMQ(ctx, a); err != nil {
 		log.Warn("rabbit_alert_publish_failed", slog.String("err", err.Error()))
 	}
@@ -139,8 +192,10 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 	if err := c.d.Cache.PushRecentAlert(ctx, a); err != nil {
 		log.Warn("push_recent_failed", slog.String("err", err.Error()))
 	}
+	// DB record is the durable record; INSERT IGNORE keeps a retry idempotent.
 	if err := c.recordAlert(ctx, a); err != nil {
 		log.Warn("db_record_failed", slog.String("err", err.Error()))
+		return err
 	}
 	log.Info("alert_emitted",
 		slog.String("sensor_id", a.SensorID),
@@ -148,6 +203,17 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 		slog.String("level", a.AlertLevel),
 		slog.Float64("speed_mm_day", a.DeformationSpeedMMDay),
 	)
+	return nil
+}
+
+// bumpRetry increments and returns the retry count for a message_id, kept in
+// Redis with a short TTL so the counter self-cleans.
+func (c *Consumer) bumpRetry(ctx context.Context, messageID string) int {
+	n, err := c.d.Cache.IncrRetry(ctx, messageID)
+	if err != nil {
+		return 1
+	}
+	return int(n)
 }
 
 func (c *Consumer) recordAlert(ctx context.Context, a *threshold.Alert) error {

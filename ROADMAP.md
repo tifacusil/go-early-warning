@@ -161,14 +161,14 @@ go-early-warning/
 
 **Objetivo:** aplicar todos los patrones de resiliencia al servicio portado. Núcleo de la hipótesis empírica (Bloque 3: disponibilidad >99% sin ML Service).
 
-- [ ] **Idempotent Consumer** — dedup por `message_id` (`INSERT IGNORE` / `ON CONFLICT DO NOTHING`) antes de procesar. Tabla/Redis de mensajes vistos. (CLAUDE.md §1.3, §2.2)
-- [ ] **Retry + backoff exponencial** — consumidores y HTTP saliente: máx 3 intentos, backoff 1s/5s/30s, luego DLQ. (CLAUDE.md §4)
-- [ ] **Dead Letter Queue** — `sensors.dlx` → `sensors.dead_letter` configurada en el consumer; nack sin requeue infinito.
-- [ ] **Publisher Confirms** — confirmar antes de borrar buffer (aplica a Data Receiving en Hito 5; en early-warning, confirmar publish de alerta).
-- [ ] **Circuit Breaker** `early-warning → data-analysis` (HTTP) — abre tras N fallos, half-open. **Degradación a umbral simple** mientras abierto (continuidad operativa obligatoria, CLAUDE.md §2.3). Estado expuesto en `/metrics`.
-- [ ] **Timeout explícito** en toda llamada HTTP saliente (nunca default del cliente).
+- [x] **Idempotent Consumer** — dedup por `message_id` en Redis (`SET NX EX`, `pkg/idempotency.RedisStore`) **antes** de procesar; duplicado → ack+skip. Además `store.RecordAlert` usa `INSERT IGNORE` keyed por `message_id` (doble red). (CLAUDE.md §1.3, §2.2)
+- [x] **Retry + backoff exponencial** — `pkg/httpx`: máx reintentos + backoff 1s/5s/30s en HTTP saliente; consumer requeue acotado (contador Redis `IncrRetry`) antes de DLQ. (CLAUDE.md §4)
+- [x] **Dead Letter Queue** — consumer `nack(requeue=false)` tras N intentos → la queue `early_warning.evaluate` (con `x-dead-letter-exchange: sensors.dlx`, pre-declarada en infra) enruta a `sensors.dead_letter`. Sin requeue infinito.
+- [ ] **Publisher Confirms** — N/A crítico en early-warning (publica alerta best-effort + persiste en MySQL como verdad durable). Aplica a `data-receiving` Hito 5. `// TODO(SE-practice):` en `pkg/amqp`.
+- [x] **Circuit Breaker** `early-warning → data-analysis` (HTTP, `pkg/httpx`) — abre tras `CIRCUIT_BREAKER_FAILURE_THRESHOLD` fallos, half-open tras `..._RESET_TIMEOUT_MS`. **Degradación a umbral simple**: breaker abierto → `enrich` devuelve nil → reporte sin `data_analysis` (continuidad operativa §2.3). Estado vía `Server.DataAnalysisState()` (expuesto en `/metrics` Hito 4).
+- [x] **Timeout explícito** en toda llamada HTTP saliente (httpx + subs + publisher; nunca default del cliente).
 
-**DoD:** test de caos — matar `data-analysis` ⇒ early-warning sigue alertando por umbral simple; matar consumer mid-process ⇒ no duplica alertas al reprocesar.
+**DoD:** lógica verificada por unit tests de `pkg/httpx` (breaker open/half-open/closed, retry-on-5xx) + dedup idempotente. Test de caos end-to-end (matar data-analysis/consumer contra infra real) → Hito 6 integration.
 
 ---
 

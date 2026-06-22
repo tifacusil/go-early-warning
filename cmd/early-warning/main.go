@@ -26,6 +26,7 @@ import (
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/threshold"
 	"github.com/AngelloFD/go-early-warning/pkg/config"
 	"github.com/AngelloFD/go-early-warning/pkg/consul"
+	"github.com/AngelloFD/go-early-warning/pkg/idempotency"
 	"github.com/AngelloFD/go-early-warning/pkg/logging"
 )
 
@@ -110,17 +111,23 @@ func run(ctx context.Context, log *slog.Logger) error {
 	engine := threshold.DefaultConfig(float64(config.Int("MAX_DT_SECONDS", 7200)))
 	levels := defaultLevels()
 
+	// --- Idempotency store (dedup by message_id, CLAUDE.md §1.3) ---
+	idemp := idempotency.NewRedisStore(redisCache.Client(), "early_warning:idemp:",
+		config.Duration("IDEMPOTENCY_TTL", 24*time.Hour))
+
 	// --- Consumer ---
 	cons := consumer.New(consumer.Deps{
-		Channel:   consumeCh,
-		Queue:     config.String("RABBITMQ_QUEUE", "early_warning.evaluate"),
-		Engine:    engine,
-		Cache:     redisCache,
-		Store:     st,
-		Publisher: pub,
-		Subs:      resolver,
-		Levels:    levels,
-		Log:       log,
+		Channel:    consumeCh,
+		Queue:      config.String("RABBITMQ_QUEUE", "early_warning.evaluate"),
+		Engine:     engine,
+		Cache:      redisCache,
+		Store:      st,
+		Publisher:  pub,
+		Subs:       resolver,
+		Levels:     levels,
+		Idemp:      idemp,
+		MaxRetries: config.Int("CONSUMER_MAX_RETRIES", 3),
+		Log:        log,
 	})
 	go func() {
 		if err := cons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -133,9 +140,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Service:         serviceName,
 		Cache:           redisCache,
 		Store:           st,
-		DataAnalysisURL: config.String("DATA_ANALYSIS_URL", ""),
-		DataAnalysisTO:  time.Duration(config.Int("DATA_ANALYSIS_TIMEOUT_MS", 5000)) * time.Millisecond,
-		Log:             log,
+		DataAnalysisURL:  config.String("DATA_ANALYSIS_URL", ""),
+		DataAnalysisTO:   time.Duration(config.Int("DATA_ANALYSIS_TIMEOUT_MS", 5000)) * time.Millisecond,
+		BreakerThreshold: config.Int("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
+		BreakerResetFor:  time.Duration(config.Int("CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30000)) * time.Millisecond,
+		Log:              log,
 		HealthProbes: map[string]func(context.Context) error{
 			"redis": redisCache.Ping,
 			"mysql": st.Ping,
