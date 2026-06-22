@@ -94,7 +94,7 @@ func (p *Publisher) PublishHTTP(ctx context.Context, a *threshold.Alert) {
 		p.log.Warn("http_publish_failed", slog.String("url", p.cfg.HTTPAlertURL), slog.String("err", err.Error()))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		p.log.Warn("http_publish_failed", slog.String("url", p.cfg.HTTPAlertURL), slog.Int("status", resp.StatusCode))
 	}

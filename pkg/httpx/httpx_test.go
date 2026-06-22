@@ -87,7 +87,7 @@ func TestHalfOpenRecoversToClosed(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	resp, _ := c.Do(req)
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	if c.State() != StateOpen {
 		t.Fatalf("want open, got %s", c.State())
@@ -100,7 +100,7 @@ func TestHalfOpenRecoversToClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("half-open probe failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if c.State() != StateClosed {
 		t.Fatalf("want closed after recovery, got %s", c.State())
 	}

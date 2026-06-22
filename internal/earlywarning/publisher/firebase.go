@@ -53,11 +53,13 @@ func NewFirebasePusher(ctx context.Context, cfg FirebaseConfig) (Pusher, error) 
 	if !json.Valid(raw) {
 		return noopPusher{}, nil
 	}
-	creds, err := google.CredentialsFromJSON(ctx, raw, fcmScope)
+	// Service-account JSON only (FCM). JWTConfigFromJSON validates the key and is
+	// not deprecated, unlike CredentialsFromJSON/WithCredentialsJSON.
+	jwtCfg, err := google.JWTConfigFromJSON(raw, fcmScope)
 	if err != nil {
 		return nil, err
 	}
-	opt := option.WithCredentials(creds)
+	opt := option.WithTokenSource(jwtCfg.TokenSource(ctx))
 
 	app, err := firebase.NewApp(ctx, nil, opt)
 	if err != nil {
