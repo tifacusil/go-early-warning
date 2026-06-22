@@ -161,7 +161,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}()
 
 	// --- gRPC: data-analysis (enriquecimiento de reportes) ---
-	daConn, err := grpc.NewClient(config.String("DATA_ANALYSIS_GRPC", "data-analysis-1:9090"),
+	daConn, err := grpc.NewClient(config.String("DATA_ANALYSIS_GRPC", "data-analysis-1:50051"),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return err
