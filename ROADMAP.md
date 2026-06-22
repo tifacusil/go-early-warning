@@ -1,10 +1,11 @@
-# ROADMAP — Reescritura `early-warning-demo` (Python) → `go-early-warning` (Go)
+# ROADMAP — Microservicio `early-warning` (Python → Go)
 
-> Plan de hitos para reescribir el sistema de monitoreo de deslizamientos (Bai et al. 2020) en Go,
+> Reescritura en Go del microservicio `early-warning` (de Bai et al. 2020),
 > aplicando **sin excepción** las prácticas de [CLAUDE.md](./CLAUDE.md).
-> El sistema baseline en Python (`early-warning-demo`) implementa **1 de los 6 microservicios**
-> objetivo: `early-warning`. El resto de la arquitectura debe construirse contract-first.
-> Objetivo final: validar empíricamente mejora de rendimiento vs. baseline (marco El Fellah et al. 2026).
+> **Alcance de este repo: solo el servicio `early-warning`.** Es 1 de los 6 microservicios
+> del sistema; los otros 5 y el benchmark del sistema completo viven fuera (ver
+> [Fuera de alcance](#fuera-de-alcance-de-este-repo)). El baseline Python
+> (`early-warning-demo`) implementa este mismo servicio.
 
 ---
 
@@ -29,66 +30,48 @@
 
 ## Estructura del proyecto
 
-Layout monorepo Go. **Hito 1 arranca por `contracts/`** (contract-first, bloquea handlers).
+Layout Go de **un solo servicio** (`early-warning`).
 
 ```
 go-early-warning/
 ├── CLAUDE.md
 ├── ROADMAP.md
-├── go.mod                          # módulo github.com/AngelloFD/go-early-warning
-├── go.sum
-├── Makefile                        # build, test, lint, vet, contract-validate
-├── Dockerfile                      # imagen del servicio -> ghcr.io/tifacusil/early-warning
+├── go.mod / go.sum                 # módulo github.com/AngelloFD/go-early-warning (Go 1.26)
+├── Makefile                        # build, test, lint, vet, contract-validate, ci
+├── Dockerfile                      # -> ghcr.io/tifacusil/early-warning
 │                                   # infra (tesis-infra) provee compose/env, no este repo
 │
-├── contracts/                      # ◄── HITO 1 empieza aquí
-│   ├── schemas/                    # JSON Schema Draft 2020-12
-│   │   ├── sensor_reading.schema.json
-│   │   ├── alert.schema.json
-│   │   └── report.schema.json
-│   ├── openapi/                    # OpenAPI 3.x por servicio
-│   │   ├── early-warning.yaml
-│   │   ├── data-analysis.yaml
-│   │   └── user-management.yaml
-│   └── examples/                   # mensajes ejemplo, validados en CI
-│       ├── sensor_reading.example.json
-│       ├── alert.example.json
-│       └── report.example.json
+├── contracts/
+│   ├── schemas/                    # JSON Schema 2020-12: sensor_reading, alert, report
+│   ├── openapi/                    # early-warning.yaml + contratos consumidos
+│   │                               #   (data-analysis, user-management)
+│   └── examples/                   # ejemplos validados en CI
 │
-├── cmd/                            # entrypoints (1 por servicio) — Hito 2+
-│   ├── early-warning/main.go
-│   ├── data-receiving/main.go
-│   ├── data-management/main.go
-│   ├── data-analysis/main.go
-│   ├── user-management/main.go
-│   └── project-management/main.go
+├── cmd/
+│   └── early-warning/main.go       # entrypoint: cablea todo + shutdown por señal
 │
-├── internal/                       # lógica por servicio (no importable fuera) — Hito 2+
-│   └── earlywarning/
-│       ├── threshold/              # lógica pura, sin I/O (port threshold_engine.py)
-│       ├── consumer/               # RabbitMQ consumer
-│       ├── publisher/              # alertas: AMQP + HTTP + FCM
-│       ├── cache/                  # Redis
-│       ├── store/                  # MySQL (alerts, reports)
-│       └── api/                    # handlers HTTP + scheduler
+├── internal/earlywarning/          # lógica del servicio (no importable fuera)
+│   ├── threshold/                  # lógica pura, sin I/O (port threshold_engine.py)
+│   ├── consumer/                   # RabbitMQ: dedup + DLQ + fan-out
+│   ├── publisher/                  # alertas: AMQP + HTTP + FCM (firebase.go)
+│   ├── subs/                       # cliente user-management (tokens FCM, quiet hours)
+│   ├── cache/                      # Redis
+│   ├── store/                      # MySQL (alerts, reports)
+│   └── api/                        # handlers HTTP + /metrics + scheduler
 │
-├── pkg/                            # libs compartidas — Hito 0
-│   ├── logging/                    # JSON estructurado + trace_id
-│   ├── config/                     # env / Consul KV
-│   ├── httpx/                      # cliente: timeout + circuit breaker + retry
-│   ├── amqp/                       # conn, publisher confirms, DLX
-│   ├── idempotency/                # dedup por message_id
-│   ├── health/                     # health check real (BD + RabbitMQ)
+├── pkg/                            # libs (reutilizables por otros servicios del sistema)
+│   ├── logging/                    # slog JSON + trace_id
+│   ├── config/                     # env
+│   ├── httpx/                      # timeout + circuit breaker + retry
+│   ├── idempotency/                # dedup por message_id (Redis SET NX)
 │   ├── metrics/                    # Prometheus
-│   └── consul/                     # registrar / deregister
+│   ├── consul/                     # register / deregister
+│   ├── amqp/                       # esqueleto (publisher confirms/DLX) — TODO data-receiving
+│   └── health/                     # esqueleto (health usa probes en api/)
 │
-├── tools/
-│   └── contract-validate/          # valida examples vs schemas (Hito 1)
-│
-├── migrations/                     # golang-migrate, 1 dir por esquema/servicio
-│   └── early_warning/
-│
-└── deploy/                         # Dockerfiles, k8s/compose prod
+├── tools/contract-validate/        # valida examples vs schemas + versionado
+├── migrations/early_warning/       # golang-migrate (alerts, reports)
+└── deploy/                         # artefactos de despliegue
 ```
 
 **Convención de contratos (Hito 1):**
@@ -185,74 +168,41 @@ go-early-warning/
 
 ---
 
-## Hito 5 — Servicios restantes (contract-first, Strangler Fig)
+## Hito 5 — Verificación y cierre del servicio
 
-**Objetivo:** construir los otros 5 microservicios para completar la arquitectura. Cada uno reusa `pkg/` de Hitos 0/3/4 y respeta database-per-service.
+**Objetivo:** cerrar `early-warning`: completar la pirámide de testing (CLAUDE.md §3) y los huecos pendientes de hitos previos. Último hito **de este repo**.
 
-> Orden por dependencia del flujo de datos: ingesta → persistencia → análisis → usuarios/proyectos.
+- [x] **Unit tests** — `threshold` (skip paths, niveles, gap, dt), `subs` (quiet hours), `httpx` (breaker), `metrics` (handler). Sin RabbitMQ/MySQL/Consul.
+- [x] **Contract tests** — `tools/contract-validate`: examples validan contra schemas + regla de versionado.
+- [ ] **Integration tests** — Testcontainers (RabbitMQ + MySQL + Redis) para el flujo crítico: ingesta `early_warning.evaluate` → evaluación → alerta persistida + publicada. Cierra el DoD "alertas idénticas al baseline".
+- [ ] **Test de caos** — matar data-analysis ⇒ sigue alertando por umbral simple (breaker abierto); reprocesar mensaje ⇒ no duplica (idempotencia). Verifica resiliencia de Hito 3 end-to-end.
+- [ ] **Huecos pendientes** — servir `/openapi.json` + `/docs` en runtime (spec ya en `contracts/openapi/`); OTel distribuido (diferido hasta collector en infra).
 
-- [ ] **`data-receiving`** (Productor) — recibe frames de sensores, dedup vía Redis (hash payload, TTL corto), genera `message_id` UUIDv4 post-dedup, valida contra JSON Schema, escribe Redis `sensor_buffer:{message_id}` antes de publicar, borra tras publisher confirm. Cola de errores local para inválidos. (CLAUDE.md §2.1)
-- [ ] **`data-management`** (Consumidor) — persiste readings; Idempotent Consumer; su propio esquema MySQL.
-- [ ] **`data-analysis`** (HTTP) — endpoint que enriquece reportes (consumido por early-warning con circuit breaker). Su propio esquema.
-- [ ] **`user-management`** (HTTP) — `/api/v1/users/subscriptions` (tokens FCM, quiet hours, min_alert_level). Origen de los datos que `early-warning` consume hoy vía HTTP.
-- [ ] **`project-management`** (HTTP) — proyectos + umbrales por proyecto (hoy hardcodeados en `config.py:74`). early-warning lee umbrales de aquí, no de config local.
-- [ ] **Database-per-service** — cada servicio su esquema/usuario MySQL con permisos mínimos. Migrar el MySQL único compartido incrementalmente (CLAUDE.md §1.2). Migraciones `golang-migrate`.
-
-**DoD:** flujo completo data-receiving → RabbitMQ → data-management/early-warning funciona; ningún servicio query-ea la tabla de otro.
+**DoD:** integration + caos verdes contra infra efímera; servicio empaquetable (`Dockerfile` ✅) y desplegable por `tesis-infra`.
 
 ---
 
-## Hito 6 — Testing (pirámide obligatoria, CLAUDE.md §3)
+## Fuera de alcance de este repo
 
-**Objetivo:** las 4 capas para cada servicio. Esqueletos mínimos creados junto al código en hitos previos; aquí se completan.
+`go-early-warning` implementa **un** microservicio. Lo siguiente pertenece al sistema completo (otros repos / `tesis-infra`), no aquí:
 
-- [ ] **Unit tests** — lógica de negocio aislada (threshold engine, quiet hours, level picking) con mocks/fakes. Sin RabbitMQ/MySQL/Consul.
-- [ ] **Contract tests** — mensajes publicados validan contra JSON Schema vigente; examples siguen válidos (`contract-validate` Go).
-- [ ] **CDCT (Pact / `pact-go`)** — productor↔consumidor compatibles sin levantar el sistema. HTTP pacts + message pacts AMQP. (CLAUDE.md §3.3, Schwarz et al. 2025)
-- [ ] **Integration tests** — Testcontainers (RabbitMQ + MySQL) para flujos críticos: ingesta → persistencia → alerta.
+- **Otros 5 microservicios** — `data-receiving`, `data-management`, `data-analysis`, `user-management`, `project-management`. Cada uno su propio repo/imagen, reutilizando el patrón de `pkg/` de este servicio. `early-warning` ya los consume vía contratos (`contracts/openapi/`) y env (`DATA_ANALYSIS_URL`, `USER_MANAGEMENT_URL`).
+- **CDCT (Pact / `pact-go`)** — requiere la contraparte (productor/consumidor del otro lado). Se monta cuando exista el servicio par.
+- **Benchmark Go vs. Python** (El Fellah et al. 2026) — validación empírica cross-repo a nivel tesis; se corre sobre el sistema desplegado por `tesis-infra`, no desde este repo.
+- **`project-management` para umbrales** — hoy `staticLevels` provisional en `cmd/` (`// TODO(SE-practice):`); migra a cliente HTTP cuando exista ese servicio.
 
-**DoD:** CI corre las 4 capas; cobertura de los flujos críticos.
-
----
-
-## Hito 7 — Benchmark y validación empírica (objetivo de la tesis)
-
-**Objetivo:** medir Go vs. baseline Python bajo carga idéntica, validar hipótesis de mejora (El Fellah et al. 2026: throughput +134%, latencia −49%, memoria −7..−13%, CPU +1-2%).
-
-- [ ] Harness de carga reproducible (mismo dataset de sensores a ambos sistemas).
-- [ ] Captura de métricas: throughput, latencia (p50/p90/p95/p99), CPU, memoria residente, ambos sistemas.
-- [ ] **Bloque 3** — disponibilidad >99% sin ML/data-analysis (circuit breaker degradado a umbral simple).
-- [ ] Reporte comparativo con tablas/gráficas para la tesis.
-
-**DoD:** dataset de resultados Go vs. Python publicable, con la disponibilidad bajo fallo medida.
-
----
-
-## Resumen de dependencias
-
-```
-Hito 0 (fundación)
-   └─> Hito 1 (contratos)  ← bloquea TODO handler
-          └─> Hito 2 (port early-warning)
-                 ├─> Hito 3 (resiliencia)
-                 ├─> Hito 4 (observabilidad)
-                 └─> Hito 5 (5 servicios restantes)  ← reusa pkg/ de 3 y 4
-                        └─> Hito 6 (testing pirámide)
-                               └─> Hito 7 (benchmark)
-```
-
-## Trazabilidad CLAUDE.md
+## Trazabilidad CLAUDE.md (este servicio)
 
 | Principio CLAUDE.md | Hito |
 |---|---|
 | §1.1 Contract-first | 1 |
-| §1.2 Database-per-service | 2, 5 |
+| §1.2 Database-per-service | 2 |
 | §1.3 Idempotencia | 3 |
 | §1.4 Versionado contratos | 1 |
 | §1.5 Resiliencia HTTP | 3 |
-| §1.6 Health checks reales | 4 |
+| §1.6 Health checks reales | 2 |
 | §1.7 Config externalizada | 0, 2 |
 | §1.8 Logging + correlation ID | 4 |
-| §3 Testing | 6 |
+| §3 Testing | 1–4 (por componente), 5 (integración) |
 | §4 Resiliencia | 3 |
 | §5 Observabilidad | 4 |
