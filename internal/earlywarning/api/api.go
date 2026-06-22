@@ -19,6 +19,7 @@ import (
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/cache"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/store"
 	"github.com/AngelloFD/go-early-warning/pkg/httpx"
+	"github.com/AngelloFD/go-early-warning/pkg/metrics"
 )
 
 // Deps bundles the API's collaborators.
@@ -31,6 +32,7 @@ type Deps struct {
 	// Circuit-breaker tuning for the data-analysis call (CLAUDE.md §2.3).
 	BreakerThreshold int
 	BreakerResetFor  time.Duration
+	Metrics          *metrics.Metrics // optional; nil disables /metrics + instrumentation
 	Log              *slog.Logger
 	// HealthProbes are named connectivity checks (mysql, rabbitmq, redis).
 	HealthProbes map[string]func(ctx context.Context) error
@@ -62,11 +64,26 @@ func (s *Server) DataAnalysisState() string { return s.da.State().String() }
 // Routes registers all handlers on a fresh mux and returns it.
 func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", s.health)
-	mux.HandleFunc("GET /alerts/recent", s.alertsRecent)
-	mux.HandleFunc("GET /reports/latest", s.reportsLatest)
-	mux.HandleFunc("POST /reports/generate", s.reportsGenerate)
+	mux.HandleFunc("GET /health", s.instrument("/health", s.health))
+	mux.HandleFunc("GET /alerts/recent", s.instrument("/alerts/recent", s.alertsRecent))
+	mux.HandleFunc("GET /reports/latest", s.instrument("/reports/latest", s.reportsLatest))
+	mux.HandleFunc("POST /reports/generate", s.instrument("/reports/generate", s.reportsGenerate))
+	if s.d.Metrics != nil {
+		mux.Handle("GET /metrics", s.d.Metrics.Handler())
+	}
 	return mux
+}
+
+// instrument records per-route handler latency (CLAUDE.md §5). No-op without Metrics.
+func (s *Server) instrument(route string, h http.HandlerFunc) http.HandlerFunc {
+	if s.d.Metrics == nil {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		h(w, r)
+		s.d.Metrics.HTTPDuration.WithLabelValues(route, r.Method).Observe(time.Since(start).Seconds())
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -220,6 +237,9 @@ func (s *Server) enrich(ctx context.Context, projectID, period, windowStart, win
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.da.Do(req)
+	if s.d.Metrics != nil {
+		s.d.Metrics.BreakerState.WithLabelValues("data-analysis").Set(float64(s.da.State()))
+	}
 	if err != nil {
 		if err == httpx.ErrCircuitOpen {
 			s.d.Log.Warn("data_analysis_circuit_open", slog.String("project", projectID))

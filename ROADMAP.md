@@ -176,12 +176,12 @@ go-early-warning/
 
 **Objetivo:** logs, métricas, health, tracing en el servicio portado (patrón replicable a los demás).
 
-- [ ] **Logging JSON estructurado** — campos `timestamp`, `level`, `service`, `instance_id`, `message_id`/`trace_id`, `event`. Reemplaza `logger.info("eval sensor=%s...")` del baseline.
-- [ ] **Métricas Prometheus** `/metrics` — `cpu_user_seconds_total`, `process_resident_memory_bytes`, throughput (msg/req por seg), latencia p50/p90/p95/p99, contador alerts publicadas/descartadas, estado del circuit breaker.
-- [ ] **Health check real** `/health` — verifica conectividad RabbitMQ + MySQL (no estático como `app.py:211`).
-- [ ] **Distributed tracing** (OpenTelemetry) — `message_id` como `trace_id` en el flujo ingest → consume → alerta.
+- [x] **Logging JSON estructurado** (`pkg/logging`, slog JSON) — campos `timestamp`, `level`, `service`, `instance_id`, `trace_id` (= `message_id` vía `WithTraceID`/`FromContext`), `event`. Nivel por `LOG_LEVEL`. Reemplaza el `logger.info("eval sensor=%s...")` del baseline.
+- [x] **Métricas Prometheus** `/metrics` (`pkg/metrics`, client_golang) — process collector (CPU `process_cpu_seconds_total`, `process_resident_memory_bytes`) + Go collector; custom: `ew_messages_consumed_total`, `ew_messages_dropped_total`, `ew_duplicates_skipped_total`, `ew_alerts_published_total{level}`, `ew_eval_duration_seconds` (native histogram → percentiles), `ew_http_request_duration_seconds{route,method}`, `ew_circuit_breaker_state{target}`. Label `service` por instancia.
+- [x] **Health check real** `/health` — probes Redis + MySQL, 503 si degradado (hecho en Hito 2).
+- [ ] **Distributed tracing** (OpenTelemetry) — `trace_id` (= `message_id`) ya propagado en logs por contexto. OTel/exporter completo **diferido**: sin collector en infra no aporta. `// TODO(SE-practice):` (CLAUDE.md §5 lo marca "recomendado", no obligatorio).
 
-**DoD:** dashboard scrape-able; un mensaje rastreable end-to-end por `trace_id`.
+**DoD:** `/metrics` scrape-able (proceso + custom + breaker); mensaje rastreable por `trace_id` en logs JSON. Tracing distribuido OTel diferido a cuando infra tenga collector.
 
 ---
 

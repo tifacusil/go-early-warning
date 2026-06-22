@@ -18,6 +18,7 @@ import (
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/threshold"
 	"github.com/AngelloFD/go-early-warning/pkg/idempotency"
 	"github.com/AngelloFD/go-early-warning/pkg/logging"
+	"github.com/AngelloFD/go-early-warning/pkg/metrics"
 )
 
 // SubscriptionResolver resolves FCM tokens for a project/level (user-management).
@@ -42,6 +43,7 @@ type Deps struct {
 	Levels     ThresholdProvider
 	Idemp      idempotency.Store // dedup by message_id (CLAUDE.md §1.3)
 	MaxRetries int               // requeue attempts before dead-lettering (default 3)
+	Metrics    *metrics.Metrics  // optional; nil disables instrumentation
 	Log        *slog.Logger
 }
 
@@ -93,14 +95,23 @@ func (c *Consumer) maxRetries() int {
 	return c.d.MaxRetries
 }
 
+func (c *Consumer) m() *metrics.Metrics { return c.d.Metrics }
+
 // handle decides ack / requeue / dead-letter based on process() outcome.
 func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	_ = c.d.Cache.SetLastMessageProcessedAt(ctx, time.Now().UTC().Format(time.RFC3339))
+
+	if m := c.m(); m != nil {
+		m.MessagesConsumed.Inc()
+	}
 
 	var wm wireMessage
 	if err := json.Unmarshal(d.Body, &wm); err != nil {
 		// Malformed JSON is non-retryable: ack to drop (matches Python).
 		c.d.Log.Warn("json_decode_error", slog.Int("body_len", len(d.Body)))
+		if m := c.m(); m != nil {
+			m.MessagesDropped.Inc()
+		}
 		_ = d.Ack(false)
 		return
 	}
@@ -115,6 +126,9 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 			log.Warn("idemp_check_failed", slog.String("err", err.Error()))
 		} else if !first {
 			log.Info("duplicate_skipped")
+			if m := c.m(); m != nil {
+				m.Duplicates.Inc()
+			}
 			_ = d.Ack(false)
 			return
 		}
@@ -138,7 +152,11 @@ func (c *Consumer) process(ctx context.Context, log *slog.Logger, wm wireMessage
 		}
 	}
 
+	start := time.Now()
 	res := c.d.Engine.Evaluate(m, prev, c.d.Levels.Levels(m.ProjectID))
+	if c.d.Metrics != nil {
+		c.d.Metrics.EvalDuration.Observe(time.Since(start).Seconds())
+	}
 
 	if res.Alert != nil {
 		if err := c.dispatch(ctx, log, res.Alert); err != nil {
@@ -164,6 +182,9 @@ func (c *Consumer) retryOrDeadLetter(ctx context.Context, log *slog.Logger, d am
 	}
 	if attempts > c.maxRetries() {
 		log.Warn("dead_lettered", slog.Int("attempts", attempts), slog.String("err", cause.Error()))
+		if c.d.Metrics != nil {
+			c.d.Metrics.MessagesDropped.Inc()
+		}
 		_ = d.Nack(false, false) // -> DLX
 		return
 	}
@@ -196,6 +217,9 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 	if err := c.recordAlert(ctx, a); err != nil {
 		log.Warn("db_record_failed", slog.String("err", err.Error()))
 		return err
+	}
+	if c.d.Metrics != nil {
+		c.d.Metrics.AlertsPublished.WithLabelValues(a.AlertLevel).Inc()
 	}
 	log.Info("alert_emitted",
 		slog.String("sensor_id", a.SensorID),

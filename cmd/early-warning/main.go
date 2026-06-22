@@ -28,12 +28,13 @@ import (
 	"github.com/AngelloFD/go-early-warning/pkg/consul"
 	"github.com/AngelloFD/go-early-warning/pkg/idempotency"
 	"github.com/AngelloFD/go-early-warning/pkg/logging"
+	"github.com/AngelloFD/go-early-warning/pkg/metrics"
 )
 
 const serviceName = "early-warning"
 
 func main() {
-	log := logging.New(serviceName, config.String("INSTANCE_ID", "ew-1"))
+	log := logging.New(serviceName, config.String("INSTANCE_ID", "ew-1"), config.String("LOG_LEVEL", "info"))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -44,6 +45,9 @@ func main() {
 }
 
 func run(ctx context.Context, log *slog.Logger) error {
+	// --- Metrics (Prometheus /metrics, CLAUDE.md §5) ---
+	mx := metrics.New(serviceName)
+
 	// --- Redis (compartido en infra: host "redis", auth REDIS_PASSWORD) ---
 	redisCache := cache.New(cache.Config{
 		Host: config.String("REDIS_HOST", "redis"),
@@ -127,6 +131,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Levels:     levels,
 		Idemp:      idemp,
 		MaxRetries: config.Int("CONSUMER_MAX_RETRIES", 3),
+		Metrics:    mx,
 		Log:        log,
 	})
 	go func() {
@@ -144,6 +149,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		DataAnalysisTO:   time.Duration(config.Int("DATA_ANALYSIS_TIMEOUT_MS", 5000)) * time.Millisecond,
 		BreakerThreshold: config.Int("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
 		BreakerResetFor:  time.Duration(config.Int("CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30000)) * time.Millisecond,
+		Metrics:          mx,
 		Log:              log,
 		HealthProbes: map[string]func(context.Context) error{
 			"redis": redisCache.Ping,

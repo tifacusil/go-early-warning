@@ -14,13 +14,27 @@ type ctxKey struct{ name string }
 
 var traceIDKey = ctxKey{"trace_id"}
 
-// New returns a JSON slog.Logger bound to a service and instance, writing to stdout.
-func New(service, instanceID string) *slog.Logger {
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+// New returns a JSON slog.Logger bound to a service and instance, writing to
+// stdout at the given level ("debug"/"info"/"warn"/"error"; default info).
+func New(service, instanceID, level string) *slog.Logger {
+	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(level)})
 	return slog.New(h).With(
 		slog.String("service", service),
 		slog.String("instance_id", instanceID),
 	)
+}
+
+func parseLevel(s string) slog.Level {
+	switch s {
+	case "debug", "DEBUG":
+		return slog.LevelDebug
+	case "warn", "WARN", "warning":
+		return slog.LevelWarn
+	case "error", "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // WithTraceID stores a trace/correlation ID (e.g. message_id) on the context.
