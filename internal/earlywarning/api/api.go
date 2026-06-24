@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/cache"
+	"github.com/AngelloFD/go-early-warning/internal/earlywarning/docs"
 	dav1 "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/dataanalysis/v1"
 	"github.com/AngelloFD/go-early-warning/internal/earlywarning/store"
 	"github.com/AngelloFD/go-early-warning/pkg/grpcx"
@@ -65,6 +66,9 @@ func (s *Server) Routes() *http.ServeMux {
 	if s.d.Metrics != nil {
 		mux.Handle("GET /metrics", s.d.Metrics.Handler())
 	}
+	// Swagger UI + spec: GET /docs (UI), GET /docs/openapi.yaml (spec).
+	// Tras el gateway llega como /api/v1/warnings/docs/ (nginx hace rewrite).
+	docs.Register(mux)
 	return mux
 }
 

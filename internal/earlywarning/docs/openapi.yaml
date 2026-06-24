@@ -1,0 +1,105 @@
+openapi: 3.0.3
+info:
+  title: early-warning
+  version: 1.0.0
+  description: API del servicio early-warning (puerto de app.py).
+paths:
+  /health:
+    get:
+      summary: Health check (verifica RabbitMQ + MySQL reales)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+        "503":
+          description: Dependencia caida
+  /metrics:
+    get:
+      summary: Metricas Prometheus
+      responses:
+        "200":
+          description: Texto de exposicion Prometheus
+          content:
+            text/plain: {}
+  /alerts/recent:
+    get:
+      summary: Alertas recientes
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, maximum: 200, default: 10 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecentAlertsResponse" }
+  /reports/latest:
+    get:
+      summary: Reporte mas reciente
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: period
+          in: query
+          required: false
+          schema: { type: string, enum: [daily, weekly], default: daily }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        "404": { description: Not found }
+  /reports/generate:
+    post:
+      summary: Genera reporte (ventana completa mas reciente)
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: period
+          in: query
+          required: false
+          schema: { type: string, enum: [daily, weekly], default: daily }
+        - name: push
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        "400": { description: Parametros invalidos }
+        "500": { description: Fallo al generar }
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, service, checks]
+      properties:
+        status: { type: string, enum: [healthy, degraded] }
+        service: { type: string }
+        alerts_generated: { type: integer }
+        checks:
+          type: object
+          additionalProperties: { type: string }
+    Alert:
+      $ref: "../schemas/alert.schema.json"
+    RecentAlertsResponse:
+      type: object
+      required: [alerts]
+      properties:
+        alerts:
+          type: array
+          items: { $ref: "#/components/schemas/Alert" }
+    Report:
+      $ref: "../schemas/report.schema.json"
