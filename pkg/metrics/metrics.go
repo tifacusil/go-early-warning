@@ -5,6 +5,8 @@ package metrics
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -21,8 +23,13 @@ type Metrics struct {
 	Duplicates       prometheus.Counter
 	AlertsPublished  *prometheus.CounterVec // by level
 	EvalDuration     prometheus.Histogram   // seconds; percentiles via histogram_quantile
-	HTTPDuration     *prometheus.HistogramVec
-	BreakerState     *prometheus.GaugeVec // 0 closed / 1 open / 2 half_open, by target
+	BreakerState     *prometheus.GaugeVec   // 0 closed / 1 open / 2 half_open, by target
+
+	// HTTP: same metric name as data-management/project-management/
+	// user-management (http_request_duration_seconds, http_requests_total) so
+	// the Grafana A-vs-B dashboard can aggregate every Go service the same way.
+	httpReqTotal    *prometheus.CounterVec
+	httpReqDuration *prometheus.HistogramVec
 }
 
 // New builds and registers all metrics for a service. The service name is a
@@ -53,17 +60,51 @@ func New(service string) *Metrics {
 			Name: "ew_eval_duration_seconds", Help: "Message evaluation latency.", ConstLabels: cl,
 			NativeHistogramBucketFactor: 1.1,
 		}),
-		HTTPDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name: "ew_http_request_duration_seconds", Help: "HTTP handler latency.", ConstLabels: cl,
-			NativeHistogramBucketFactor: 1.1,
-		}, []string{"route", "method"}),
 		BreakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "ew_circuit_breaker_state", Help: "0 closed, 1 open, 2 half_open.", ConstLabels: cl,
 		}, []string{"target"}),
+		httpReqTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Total de requests HTTP por metodo, ruta y codigo.",
+		}, []string{"method", "route", "status"}),
+		httpReqDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "Latencia de requests HTTP. Buckets default cubren p50..p99.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"method", "route", "status"}),
 	}
 	reg.MustRegister(m.MessagesConsumed, m.MessagesDropped, m.Duplicates,
-		m.AlertsPublished, m.EvalDuration, m.HTTPDuration, m.BreakerState)
+		m.AlertsPublished, m.EvalDuration, m.BreakerState,
+		m.httpReqTotal, m.httpReqDuration)
 	return m
+}
+
+// Middleware measures every request that reaches the mux: increments the
+// counter and observes latency. Wraps the whole mux (not per-handler
+// instrumentation) so a new route cannot slip through unmeasured. route is
+// resolved by the caller (net/http has no route pattern of its own).
+func (m *Metrics) Middleware(route string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next(sw, r)
+
+		status := strconv.Itoa(sw.status)
+		m.httpReqTotal.WithLabelValues(r.Method, route, status).Inc()
+		m.httpReqDuration.WithLabelValues(r.Method, route, status).Observe(time.Since(start).Seconds())
+	}
+}
+
+// statusWriter captures the status code written by the handler; net/http's
+// ResponseWriter does not expose it after the fact.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 // Handler returns the /metrics HTTP handler.

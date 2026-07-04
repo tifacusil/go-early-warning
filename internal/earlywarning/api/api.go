@@ -72,16 +72,15 @@ func (s *Server) Routes() *http.ServeMux {
 	return mux
 }
 
-// instrument records per-route handler latency (CLAUDE.md §5). No-op without Metrics.
+// instrument records per-route handler latency and status (CLAUDE.md §5),
+// same metric name (http_request_duration_seconds) as the other Go services
+// so the A-vs-B dashboard aggregates every service the same way. No-op
+// without Metrics.
 func (s *Server) instrument(route string, h http.HandlerFunc) http.HandlerFunc {
 	if s.d.Metrics == nil {
 		return h
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		h(w, r)
-		s.d.Metrics.HTTPDuration.WithLabelValues(route, r.Method).Observe(time.Since(start).Seconds())
-	}
+	return s.d.Metrics.Middleware(route, h)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

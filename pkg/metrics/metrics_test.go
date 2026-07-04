@@ -37,3 +37,35 @@ func TestHandlerExposesCustomAndProcessMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestMiddlewareRecordsStatusAndLatency(t *testing.T) {
+	m := New("early-warning")
+	handler := m.Middleware("/alerts/recent", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/alerts/recent", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("handler status = %d, want 404 (middleware must not swallow it)", rec.Code)
+	}
+
+	out := scrapeBody(t, m)
+	for _, want := range []string{
+		`http_requests_total{method="GET",route="/alerts/recent",status="404"} 1`,
+		`http_request_duration_seconds_count{method="GET",route="/alerts/recent",status="404"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics output missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func scrapeBody(t *testing.T, m *Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body, _ := io.ReadAll(rec.Body)
+	return string(body)
+}
