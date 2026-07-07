@@ -210,8 +210,10 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 	tokens, err := c.d.Subs.TokensFor(ctx, a.ProjectID, a.AlertLevel)
 	if err != nil {
 		log.Warn("push_flow_failed", slog.String("err", err.Error()))
-	} else {
-		c.d.Publisher.PublishPush(ctx, a, tokens)
+	} else if delivered := c.d.Publisher.PublishPush(ctx, a, tokens); delivered {
+		if m := c.m(); m != nil && !a.EvaluatedAt.IsZero() {
+			m.AlertDeliveryLatency.Observe(time.Since(a.EvaluatedAt).Seconds())
+		}
 	}
 
 	if _, err := c.d.Cache.IncrAlertsGenerated(ctx); err != nil {

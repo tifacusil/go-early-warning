@@ -6,6 +6,7 @@ package publisher
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 
 	firebase "firebase.google.com/go/v4"
@@ -84,6 +85,12 @@ func (f *fcmPusher) Push(ctx context.Context, title, body string, data map[strin
 		Android:      &messaging.AndroidConfig{Priority: "high"},
 		APNS:         &messaging.APNSConfig{Headers: map[string]string{"apns-priority": "10"}},
 	}
-	_, err := f.client.SendEachForMulticast(ctx, msg)
-	return err
+	resp, err := f.client.SendEachForMulticast(ctx, msg)
+	if err != nil {
+		return err
+	}
+	if resp.SuccessCount == 0 {
+		return fmt.Errorf("fcm: 0/%d messages accepted", len(tokens))
+	}
+	return nil
 }

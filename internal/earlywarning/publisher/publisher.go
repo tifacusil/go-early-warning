@@ -101,9 +101,11 @@ func (p *Publisher) PublishHTTP(ctx context.Context, a *threshold.Alert) {
 }
 
 // PublishPush sends an FCM notification for the alert. No-op if no pusher/tokens.
-func (p *Publisher) PublishPush(ctx context.Context, a *threshold.Alert, tokens []string) {
+// Reports delivered=true only when FCM accepted the multicast (message ID
+// assigned), so callers can measure the threshold->FCM-ack latency.
+func (p *Publisher) PublishPush(ctx context.Context, a *threshold.Alert, tokens []string) (delivered bool) {
 	if p.push == nil || len(tokens) == 0 {
-		return
+		return false
 	}
 	data := map[string]string{
 		"type":        "early_warning_alert",
@@ -116,5 +118,7 @@ func (p *Publisher) PublishPush(ctx context.Context, a *threshold.Alert, tokens 
 	body := fmt.Sprintf("Sensor %s velocidad %.3f mm/día", a.SensorID, a.DeformationSpeedMMDay)
 	if err := p.push.Push(ctx, title, body, data, tokens); err != nil {
 		p.log.Warn("push_publish_failed", slog.String("err", err.Error()))
+		return false
 	}
+	return true
 }

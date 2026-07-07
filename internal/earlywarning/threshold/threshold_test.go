@@ -80,6 +80,19 @@ func TestNonPositiveDTOverwrites(t *testing.T) {
 	}
 }
 
+func TestAlertEvaluatedAtUsesInjectedClock(t *testing.T) {
+	fixed := time.Date(2026, 6, 20, 2, 0, 0, 0, time.UTC)
+	c := Config{MaxDTSeconds: 7200, NewID: func() string { return "fixed-id" }, Now: func() time.Time { return fixed }}
+	prev := &Reading{Timestamp: baseMsg().Timestamp.Add(-1 * time.Hour), CumulativeDisplacementMM: baseMsg().CumulativeDisplacementMM - 0.9}
+	r := c.Evaluate(baseMsg(), prev, &shangtan)
+	if r.Alert == nil {
+		t.Fatal("expected alert")
+	}
+	if !r.Alert.EvaluatedAt.Equal(fixed) {
+		t.Fatalf("want EvaluatedAt %v, got %v", fixed, r.Alert.EvaluatedAt)
+	}
+}
+
 func TestSpeedAndLevels(t *testing.T) {
 	// 1 hour apart; displacement delta drives mm/day = delta/3600*86400 = delta*24.
 	prevTS := baseMsg().Timestamp.Add(-1 * time.Hour)
@@ -108,6 +121,9 @@ func TestSpeedAndLevels(t *testing.T) {
 				}
 				if r.Alert.MessageID != "fixed-id" {
 					t.Fatalf("expected injected id")
+				}
+				if r.Alert.EvaluatedAt.IsZero() {
+					t.Fatalf("expected EvaluatedAt set")
 				}
 			} else if r.Alert != nil {
 				t.Fatalf("expected no alert, got level %s", r.Alert.AlertLevel)

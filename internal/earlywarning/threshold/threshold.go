@@ -38,6 +38,10 @@ type Alert struct {
 	PreviousDisplacementMM float64 `json:"previous_displacement_mm"`
 	ThresholdMMDay         float64 `json:"threshold_mm_day"`
 	Timestamp              string  `json:"timestamp"`
+
+	// EvaluatedAt is the moment the threshold was crossed (not part of the
+	// wire contract): start of controlled latency measurement threshold->FCM ack.
+	EvaluatedAt time.Time `json:"-"`
 }
 
 // Result is the outcome of evaluating one message.
@@ -72,6 +76,7 @@ type Config struct {
 	MaxDTSeconds float64
 	// NewID and Now are injected so the engine stays deterministic in tests.
 	NewID func() string
+	Now   func() time.Time
 }
 
 // DefaultConfig returns production defaults (2h gap, real UUID v4).
@@ -79,7 +84,7 @@ func DefaultConfig(maxDTSeconds float64) Config {
 	if maxDTSeconds <= 0 {
 		maxDTSeconds = 7200
 	}
-	return Config{MaxDTSeconds: maxDTSeconds, NewID: func() string { return uuid.NewString() }}
+	return Config{MaxDTSeconds: maxDTSeconds, NewID: func() string { return uuid.NewString() }, Now: time.Now}
 }
 
 // pickLevel returns the crossed level and its threshold, or ("", 0, false).
@@ -149,6 +154,10 @@ func (c Config) Evaluate(m Message, previous *Reading, thresholds *Levels) Resul
 		return Result{ShouldStoreCurrent: true, StorePayload: store, Note: "alert_none"}
 	}
 
+	now := c.Now
+	if now == nil {
+		now = time.Now
+	}
 	alert := &Alert{
 		SchemaVersion:          schemaVersion,
 		MessageID:              c.NewID(),
@@ -161,6 +170,7 @@ func (c Config) Evaluate(m Message, previous *Reading, thresholds *Levels) Resul
 		PreviousDisplacementMM: previous.CumulativeDisplacementMM,
 		ThresholdMMDay:         thr,
 		Timestamp:              iso(m.Timestamp),
+		EvaluatedAt:            now(),
 	}
 	return Result{ShouldStoreCurrent: true, StorePayload: store, Alert: alert}
 }

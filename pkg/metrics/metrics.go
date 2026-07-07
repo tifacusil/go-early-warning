@@ -25,6 +25,11 @@ type Metrics struct {
 	EvalDuration     prometheus.Histogram   // seconds; percentiles via histogram_quantile
 	BreakerState     *prometheus.GaugeVec   // 0 closed / 1 open / 2 half_open, by target
 
+	// AlertDeliveryLatency measures the controllable span: threshold crossed
+	// (Alert.EvaluatedAt) -> FCM accepts the multicast (HTTP 200 + message ID).
+	// Fine buckets since this path is expected to complete in low seconds.
+	AlertDeliveryLatency prometheus.Histogram
+
 	// HTTP: same metric name as data-management/project-management/
 	// user-management (http_request_duration_seconds, http_requests_total) so
 	// the Grafana A-vs-B dashboard can aggregate every Go service the same way.
@@ -63,6 +68,12 @@ func New(service string) *Metrics {
 		BreakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "ew_circuit_breaker_state", Help: "0 closed, 1 open, 2 half_open.", ConstLabels: cl,
 		}, []string{"target"}),
+		AlertDeliveryLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:        "ew_alert_delivery_latency_seconds",
+			Help:        "Threshold crossed -> FCM multicast accepted (message ID assigned).",
+			ConstLabels: cl,
+			Buckets:     []float64{.01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+		}),
 		httpReqTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "http_requests_total",
 			Help: "Total de requests HTTP por metodo, ruta y codigo.",
@@ -74,7 +85,7 @@ func New(service string) *Metrics {
 		}, []string{"method", "route", "status"}),
 	}
 	reg.MustRegister(m.MessagesConsumed, m.MessagesDropped, m.Duplicates,
-		m.AlertsPublished, m.EvalDuration, m.BreakerState,
+		m.AlertsPublished, m.EvalDuration, m.BreakerState, m.AlertDeliveryLatency,
 		m.httpReqTotal, m.httpReqDuration)
 	return m
 }
