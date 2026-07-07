@@ -35,6 +35,14 @@ func (noopPusher) Push(context.Context, string, string, map[string]string, []str
 	return nil
 }
 
+// IsNoop reports whether p is the no-op pusher (Firebase not configured or
+// misconfigured with invalid JSON). Callers use this to log loudly instead of
+// silently accepting pushes that will never be delivered.
+func IsNoop(p Pusher) bool {
+	_, ok := p.(noopPusher)
+	return ok
+}
+
 // NewFirebasePusher builds an FCM pusher. If no credentials are present it
 // returns a no-op pusher (nil error), matching the Python "skip if unconfigured".
 func NewFirebasePusher(ctx context.Context, cfg FirebaseConfig) (Pusher, error) {

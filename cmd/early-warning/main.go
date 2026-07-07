@@ -113,6 +113,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 	})
 	if err != nil {
 		log.Warn("firebase_init_failed", "err", err.Error())
+	} else if publisher.IsNoop(pusher) {
+		// Silent otherwise: alerts keep being generated and "alert_emitted" logged,
+		// but no FCM push is ever attempted. Loud on purpose so this isn't mistaken
+		// for a working push pipeline.
+		log.Warn("firebase_not_configured_push_disabled")
 	}
 
 	pub := publisher.New(publisher.Config{

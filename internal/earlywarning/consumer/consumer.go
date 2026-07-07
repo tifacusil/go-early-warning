@@ -208,11 +208,19 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 	c.d.Publisher.PublishHTTP(ctx, a)
 
 	tokens, err := c.d.Subs.TokensFor(ctx, a.ProjectID, a.AlertLevel)
-	if err != nil {
+	switch {
+	case err != nil:
 		log.Warn("push_flow_failed", slog.String("err", err.Error()))
-	} else if delivered := c.d.Publisher.PublishPush(ctx, a, tokens); delivered {
-		if m := c.m(); m != nil && !a.EvaluatedAt.IsZero() {
-			m.AlertDeliveryLatency.Observe(time.Since(a.EvaluatedAt).Seconds())
+	case len(tokens) == 0:
+		// Not an error: no subscriber is push_enabled/eligible for this level.
+		// Logged so "no push happened" is never confused with "push succeeded".
+		log.Info("push_skipped_no_tokens", slog.String("level", a.AlertLevel))
+	default:
+		if delivered := c.d.Publisher.PublishPush(ctx, a, tokens); delivered {
+			log.Info("push_delivered", slog.Int("tokens", len(tokens)))
+			if m := c.m(); m != nil && !a.EvaluatedAt.IsZero() {
+				m.AlertDeliveryLatency.Observe(time.Since(a.EvaluatedAt).Seconds())
+			}
 		}
 	}
 
