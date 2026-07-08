@@ -70,7 +70,14 @@ func NewFirebasePusher(ctx context.Context, cfg FirebaseConfig) (Pusher, error) 
 	}
 	opt := option.WithTokenSource(jwtCfg.TokenSource(ctx))
 
-	app, err := firebase.NewApp(ctx, nil, opt)
+	var creds struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.Unmarshal(raw, &creds); err != nil {
+		return nil, err
+	}
+
+	app, err := firebase.NewApp(ctx, &firebase.Config{ProjectID: creds.ProjectID}, opt)
 	if err != nil {
 		return nil, err
 	}
