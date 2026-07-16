@@ -85,26 +85,12 @@ func run(ctx context.Context, log *slog.Logger) error {
 		log.Info("migrations_applied")
 	}
 
-	// --- RabbitMQ (separate connections for consume and publish) ---
+	// --- RabbitMQ (conexion supervisada) ---
+	// El dial real ocurre dentro de superviseConsumer, que reconecta con backoff
+	// si el broker cae. Antes se dialeaba una sola vez aca: una caida de RabbitMQ
+	// cerraba el canal de deliveries, el consumer retornaba y el proceso quedaba
+	// vivo (pod Ready) pero sin consumir hasta un reinicio manual del pod.
 	amqpURL := amqpURL()
-	consumeConn, err := amqp.Dial(amqpURL)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = consumeConn.Close() }()
-	consumeCh, err := consumeConn.Channel()
-	if err != nil {
-		return err
-	}
-	publishConn, err := amqp.Dial(amqpURL)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = publishConn.Close() }()
-	publishCh, err := publishConn.Channel()
-	if err != nil {
-		return err
-	}
 
 	// --- Firebase / push ---
 	pusher, err := publisher.NewFirebasePusher(ctx, publisher.FirebaseConfig{
@@ -120,11 +106,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 		log.Warn("firebase_not_configured_push_disabled")
 	}
 
-	pub := publisher.New(publisher.Config{
+	pubCfg := publisher.Config{
 		AlertsExchange: config.String("ALERTS_EXCHANGE", "sensors.raw"),
 		HTTPAlertURL:   config.String("ALERT_HTTP_URL", ""),
 		HTTPTimeout:    config.Duration("HTTP_TIMEOUT", 5*time.Second),
-	}, publishCh, pusher, log)
+	}
+	// El canal de publish se reconstruye en cada reconexion (misma conexion que
+	// el consume), asi el fan-out de alertas a RabbitMQ tambien sobrevive la caida.
+	buildPublisher := func(ch *amqp.Channel) *publisher.Publisher {
+		return publisher.New(pubCfg, ch, pusher, log)
+	}
 
 	// --- gRPC: user-management (subscriptions) ---
 	umConn, err := grpc.NewClient(config.String("USER_MANAGEMENT_GRPC", "user-management-1:9090"),
@@ -148,26 +139,26 @@ func run(ctx context.Context, log *slog.Logger) error {
 	idemp := idempotency.NewRedisStore(redisCache.Client(), "early_warning:idemp:",
 		config.Duration("IDEMPOTENCY_TTL", 24*time.Hour))
 
-	// --- Consumer ---
-	cons := consumer.New(consumer.Deps{
-		Channel:    consumeCh,
-		Queue:      config.String("RABBITMQ_QUEUE", "early_warning.evaluate"),
-		Engine:     engine,
-		Cache:      redisCache,
-		Store:      st,
-		Publisher:  pub,
-		Subs:       resolver,
-		Levels:     levels,
-		Idemp:      idemp,
-		MaxRetries: config.Int("CONSUMER_MAX_RETRIES", 3),
-		Metrics:    mx,
-		Log:        log,
-	})
-	go func() {
-		if err := cons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Error("consumer_stopped", "err", err.Error())
-		}
-	}()
+	// --- Consumer (supervisado: reconecta al broker con backoff) ---
+	queue := config.String("RABBITMQ_QUEUE", "early_warning.evaluate")
+	maxRetries := config.Int("CONSUMER_MAX_RETRIES", 3)
+	buildConsumer := func(consumeCh *amqp.Channel, pub *publisher.Publisher) *consumer.Consumer {
+		return consumer.New(consumer.Deps{
+			Channel:    consumeCh,
+			Queue:      queue,
+			Engine:     engine,
+			Cache:      redisCache,
+			Store:      st,
+			Publisher:  pub,
+			Subs:       resolver,
+			Levels:     levels,
+			Idemp:      idemp,
+			MaxRetries: maxRetries,
+			Metrics:    mx,
+			Log:        log,
+		})
+	}
+	go superviseConsumer(ctx, log, amqpURL, buildPublisher, buildConsumer)
 
 	// --- gRPC: data-analysis (enriquecimiento de reportes) ---
 	daConn, err := grpc.NewClient(config.String("DATA_ANALYSIS_GRPC", "data-analysis-1:50051"),
@@ -235,6 +226,110 @@ func amqpURL() string {
 		config.String("RABBITMQ_PASSWORD", "guest") + "@" +
 		config.String("RABBITMQ_HOST", "127.0.0.1") + ":" +
 		strconv.Itoa(config.Int("RABBITMQ_PORT", 5672)) + "/"
+}
+
+// superviseConsumer mantiene el consumo vivo reconectando al broker con backoff
+// exponencial (cap 30s) cada vez que la conexion cae. Solo retorna cuando ctx se
+// cancela. Cierra el gap de resiliencia medido con chaos/kill-rabbitmq: matar
+// RabbitMQ ya no deja el consumer muerto hasta un reinicio manual del pod
+// (tolerancia a fallos, CLAUDE.md 2.1/2.2). El dial inicial tambien reintenta,
+// asi que el servicio tolera arrancar antes que el broker.
+func superviseConsumer(ctx context.Context, log *slog.Logger, url string,
+	buildPublisher func(*amqp.Channel) *publisher.Publisher,
+	buildConsumer func(*amqp.Channel, *publisher.Publisher) *consumer.Consumer) {
+	const (
+		baseBackoff = 1 * time.Second
+		maxBackoff  = 30 * time.Second
+	)
+	backoff := baseBackoff
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		connected, err := consumeSession(ctx, url, buildPublisher, buildConsumer)
+		if ctx.Err() != nil {
+			return
+		}
+		if connected {
+			// La sesion vivio: la proxima reconexion arranca rapido.
+			backoff = baseBackoff
+			log.Warn("consumer_reconnecting", "err", errString(err), "backoff", backoff.String())
+		} else {
+			log.Warn("rabbitmq_connect_failed_retrying", "err", errString(err), "backoff", backoff.String())
+		}
+		if !sleepCtx(ctx, backoff) {
+			return
+		}
+		backoff = nextBackoff(backoff, maxBackoff)
+	}
+}
+
+// consumeSession abre una conexion, construye publisher + consumer y consume
+// hasta que la conexion cae o ctx se cancela. connected indica si el dial y los
+// canales se establecieron (para resetear el backoff tras una sesion real).
+func consumeSession(ctx context.Context, url string,
+	buildPublisher func(*amqp.Channel) *publisher.Publisher,
+	buildConsumer func(*amqp.Channel, *publisher.Publisher) *consumer.Consumer) (connected bool, err error) {
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return false, fmt.Errorf("dial: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	consumeCh, err := conn.Channel()
+	if err != nil {
+		return false, fmt.Errorf("consume channel: %w", err)
+	}
+	publishCh, err := conn.Channel()
+	if err != nil {
+		return false, fmt.Errorf("publish channel: %w", err)
+	}
+	pub := buildPublisher(publishCh)
+	cons := buildConsumer(consumeCh, pub)
+
+	closeCh := conn.NotifyClose(make(chan *amqp.Error, 1))
+	runErr := make(chan error, 1)
+	go func() { runErr <- cons.Run(ctx) }()
+
+	select {
+	case <-ctx.Done():
+		return true, ctx.Err()
+	case e := <-runErr:
+		if e == nil {
+			e = consumer.ErrConnClosed
+		}
+		return true, e
+	case amqpErr := <-closeCh:
+		if amqpErr == nil {
+			return true, consumer.ErrConnClosed
+		}
+		return true, fmt.Errorf("%w: %v", consumer.ErrConnClosed, amqpErr)
+	}
+}
+
+func nextBackoff(cur, max time.Duration) time.Duration {
+	if n := cur * 2; n < max {
+		return n
+	}
+	return max
+}
+
+// sleepCtx duerme d, o retorna false si ctx se cancela antes.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return "(nil)"
+	}
+	return err.Error()
 }
 
 // staticLevels is a placeholder ThresholdProvider until project-management (Hito 5).

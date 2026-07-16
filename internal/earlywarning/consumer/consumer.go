@@ -7,6 +7,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -55,6 +56,13 @@ type Consumer struct {
 // New builds a Consumer.
 func New(d Deps) *Consumer { return &Consumer{d: d} }
 
+// ErrConnClosed signals the broker connection dropped (RabbitMQ down, network):
+// the deliveries channel closed. Run returns this instead of nil so the
+// supervisor in main reconnects — previously Run returned nil here and the
+// consumer stayed dead (process alive, pod Ready, no consuming) until a manual
+// pod restart (fault-tolerance gap measured by chaos/kill-rabbitmq).
+var ErrConnClosed = errors.New("rabbitmq connection closed")
+
 // wireMessage mirrors contracts/schemas/sensor_reading.schema.json.
 type wireMessage struct {
 	MessageID  string         `json:"message_id"`
@@ -81,7 +89,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return ctx.Err()
 		case msg, ok := <-deliveries:
 			if !ok {
-				return nil
+				return ErrConnClosed
 			}
 			c.handle(ctx, msg)
 		}
