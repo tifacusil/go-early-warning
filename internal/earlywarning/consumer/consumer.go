@@ -203,17 +203,6 @@ func (c *Consumer) maxRetries() int {
 
 func (c *Consumer) m() *metrics.Metrics { return c.d.Metrics }
 
-// handle decides ack / requeue / dead-letter based on process() outcome.
-// Kept as the single-shot entry point (decode + handle) for tests and any
-// caller that is not going through Run's worker pool.
-func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
-	wm, ok := c.decode(d)
-	if !ok {
-		return
-	}
-	c.handleParsed(ctx, d, wm)
-}
-
 // decode unmarshals the payload and reports whether handling should continue.
 // It runs on the dispatch path (not in a worker) so a malformed message costs
 // nothing but an ack. Returns false when the message was already dropped.

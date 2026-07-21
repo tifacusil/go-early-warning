@@ -156,9 +156,9 @@ func TestDecodeParsesWireMessage(t *testing.T) {
 
 func TestWorkerAndPrefetchDefaults(t *testing.T) {
 	cases := []struct {
-		name             string
-		deps             Deps
-		wantW, wantPre   int
+		name           string
+		deps           Deps
+		wantW, wantPre int
 	}{
 		{"zero value defaults to 8 workers", Deps{}, 8, 64},
 		{"explicit workers scale prefetch", Deps{Workers: 16}, 16, 128},
