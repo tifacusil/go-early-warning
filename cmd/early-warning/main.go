@@ -142,6 +142,10 @@ func run(ctx context.Context, log *slog.Logger) error {
 	// --- Consumer (supervisado: reconecta al broker con backoff) ---
 	queue := config.String("RABBITMQ_QUEUE", "early_warning.evaluate")
 	maxRetries := config.Int("CONSUMER_MAX_RETRIES", 3)
+	// Concurrencia del consumidor. Sharded por sensor_id, así que subirlo no
+	// rompe el orden por sensor; 1 = orden global estricto (comportamiento viejo).
+	workers := config.Int("CONSUMER_WORKERS", 8)
+	prefetch := config.Int("CONSUMER_PREFETCH", 0) // 0 => workers*8, mín. 20
 	buildConsumer := func(consumeCh *amqp.Channel, pub *publisher.Publisher) *consumer.Consumer {
 		return consumer.New(consumer.Deps{
 			Channel:    consumeCh,
@@ -156,6 +160,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 			MaxRetries: maxRetries,
 			Metrics:    mx,
 			Log:        log,
+			Workers:    workers,
+			Prefetch:   prefetch,
 		})
 	}
 	go superviseConsumer(ctx, log, amqpURL, buildPublisher, buildConsumer)

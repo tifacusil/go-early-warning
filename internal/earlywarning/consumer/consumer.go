@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"log/slog"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -46,6 +48,14 @@ type Deps struct {
 	MaxRetries int               // requeue attempts before dead-lettering (default 3)
 	Metrics    *metrics.Metrics  // optional; nil disables instrumentation
 	Log        *slog.Logger
+
+	// Workers is how many messages are evaluated concurrently (default 8).
+	// Messages are sharded by sensor_id, so per-sensor order is preserved no
+	// matter how high this goes — see Run. Set to 1 for strict global ordering.
+	Workers int
+	// Prefetch is the AMQP QoS window. Defaults to Workers*8 (min 20): enough
+	// in-flight messages to keep every worker fed without starving on RTT.
+	Prefetch int
 }
 
 // Consumer drives one AMQP consume loop.
@@ -73,16 +83,100 @@ type wireMessage struct {
 	Payload    map[string]any `json:"payload"`
 }
 
+// work pairs a delivery with its already-decoded body, so the payload is
+// unmarshalled once (in the dispatcher) instead of again in the worker.
+type work struct {
+	d  amqp.Delivery
+	wm wireMessage
+}
+
+func (c *Consumer) workers() int {
+	if c.d.Workers <= 0 {
+		return 8
+	}
+	return c.d.Workers
+}
+
+func (c *Consumer) prefetch() int {
+	if c.d.Prefetch > 0 {
+		return c.d.Prefetch
+	}
+	if n := c.workers() * 8; n > 20 {
+		return n
+	}
+	return 20
+}
+
+// shardFor picks the worker that owns a message. Sharding is by sensor_id
+// because evaluation is stateful per sensor: process() reads the sensor's
+// previous reading from Redis, derives a deformation speed from it, and writes
+// the current one back. Two messages for the SAME sensor running concurrently
+// would race on that read-modify-write and compute speeds against a stale
+// previous reading — wrong alerts in an early-warning system. Same sensor ->
+// same worker -> same serial order as before. Different sensors run in
+// parallel, which is where the throughput comes from.
+//
+// Messages without a sensor_id carry no per-sensor state (process() skips the
+// cache entirely), so they are spread by message_id purely to balance load.
+func shardFor(wm wireMessage, n int) int {
+	key := wm.SensorID
+	if key == "" {
+		key = wm.MessageID
+	}
+	if key == "" {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32() % uint32(n))
+}
+
 // Run consumes until ctx is cancelled.
+//
+// The loop used to call handle() inline, which made the whole consumer serial:
+// prefetch only filled a local buffer, and throughput was capped at one message
+// per handle() latency per replica (~20ms => ~50 msg/s, the measured ceiling).
+// Now the loop only decodes and dispatches; N workers evaluate in parallel.
 func (c *Consumer) Run(ctx context.Context) error {
-	if err := c.d.Channel.Qos(20, 0, false); err != nil {
+	n := c.workers()
+	if err := c.d.Channel.Qos(c.prefetch(), 0, false); err != nil {
 		return err
 	}
 	deliveries, err := c.d.Channel.ConsumeWithContext(ctx, c.d.Queue, "", false, false, false, false, nil)
 	if err != nil {
 		return err
 	}
-	c.d.Log.Info("consumer_started", slog.String("queue", c.d.Queue))
+
+	// Each shard is buffered to the full prefetch window. The broker never has
+	// more than `prefetch` messages unacked with us, so no shard can ever fill
+	// up and the dispatcher never blocks — one slow sensor cannot stall the
+	// workers that own the other sensors (head-of-line blocking).
+	shards := make([]chan work, n)
+	var wg sync.WaitGroup
+	for i := range shards {
+		shards[i] = make(chan work, c.prefetch())
+		wg.Add(1)
+		go func(in <-chan work) {
+			defer wg.Done()
+			for w := range in {
+				c.handleParsed(ctx, w.d, w.wm)
+			}
+		}(shards[i])
+	}
+	// Closing the shards drains whatever is buffered before Run returns, so the
+	// supervisor never reconnects while workers still hold deliveries.
+	defer func() {
+		for _, ch := range shards {
+			close(ch)
+		}
+		wg.Wait()
+	}()
+
+	c.d.Log.Info("consumer_started",
+		slog.String("queue", c.d.Queue),
+		slog.Int("workers", n),
+		slog.Int("prefetch", c.prefetch()))
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -91,7 +185,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 			if !ok {
 				return ErrConnClosed
 			}
-			c.handle(ctx, msg)
+			wm, ok := c.decode(msg)
+			if !ok {
+				continue
+			}
+			shards[shardFor(wm, n)] <- work{d: msg, wm: wm}
 		}
 	}
 }
@@ -106,13 +204,20 @@ func (c *Consumer) maxRetries() int {
 func (c *Consumer) m() *metrics.Metrics { return c.d.Metrics }
 
 // handle decides ack / requeue / dead-letter based on process() outcome.
+// Kept as the single-shot entry point (decode + handle) for tests and any
+// caller that is not going through Run's worker pool.
 func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
-	_ = c.d.Cache.SetLastMessageProcessedAt(ctx, time.Now().UTC().Format(time.RFC3339))
-
-	if m := c.m(); m != nil {
-		m.MessagesConsumed.Inc()
+	wm, ok := c.decode(d)
+	if !ok {
+		return
 	}
+	c.handleParsed(ctx, d, wm)
+}
 
+// decode unmarshals the payload and reports whether handling should continue.
+// It runs on the dispatch path (not in a worker) so a malformed message costs
+// nothing but an ack. Returns false when the message was already dropped.
+func (c *Consumer) decode(d amqp.Delivery) (wireMessage, bool) {
 	var wm wireMessage
 	if err := json.Unmarshal(d.Body, &wm); err != nil {
 		// Malformed JSON is non-retryable: ack to drop (matches Python).
@@ -121,7 +226,18 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 			m.MessagesDropped.Inc()
 		}
 		_ = d.Ack(false)
-		return
+		return wireMessage{}, false
+	}
+	return wm, true
+}
+
+// handleParsed is the per-message pipeline, run by exactly one worker at a time
+// for any given sensor_id (see shardFor).
+func (c *Consumer) handleParsed(ctx context.Context, d amqp.Delivery, wm wireMessage) {
+	_ = c.d.Cache.SetLastMessageProcessedAt(ctx, time.Now().UTC().Format(time.RFC3339))
+
+	if m := c.m(); m != nil {
+		m.MessagesConsumed.Inc()
 	}
 
 	ctx = logging.WithTraceID(ctx, wm.MessageID)
