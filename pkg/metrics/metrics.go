@@ -25,6 +25,19 @@ type Metrics struct {
 	EvalDuration     prometheus.Histogram   // seconds; percentiles via histogram_quantile
 	BreakerState     *prometheus.GaugeVec   // 0 closed / 1 open / 2 half_open, by target
 
+	// Evaluations counts what the threshold engine concluded, by outcome:
+	// "alert", "none", or the skip reason / note it returned.
+	//
+	// Consumed was the only visible number, and it says nothing about how many
+	// messages actually reached a threshold comparison. Under load most do
+	// not: a reading that arrives out of order is discarded to protect the
+	// baseline, and one that lands more than MaxDTSeconds after it resets the
+	// baseline without evaluating. On the 2026-07-22 ladder, alerts per
+	// consumed message came out 8x below what the corpus produces per
+	// evaluation, and telling those two apart took a simulation because
+	// nothing here counted evaluations.
+	Evaluations *prometheus.CounterVec
+
 	// AlertDeliveryLatency measures the controllable span: threshold crossed
 	// (Alert.EvaluatedAt) -> FCM accepts the multicast (HTTP 200 + message ID).
 	// Fine buckets since this path is expected to complete in low seconds.
@@ -68,6 +81,11 @@ func New(service string) *Metrics {
 		BreakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "ew_circuit_breaker_state", Help: "0 closed, 1 open, 2 half_open.", ConstLabels: cl,
 		}, []string{"target"}),
+		Evaluations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name:        "ew_evaluations_total",
+			Help:        "Threshold engine outcomes: alert, none, or the skip reason.",
+			ConstLabels: cl,
+		}, []string{"outcome"}),
 		AlertDeliveryLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:        "ew_alert_delivery_latency_seconds",
 			Help:        "Threshold crossed -> FCM multicast accepted (message ID assigned).",
@@ -85,8 +103,8 @@ func New(service string) *Metrics {
 		}, []string{"method", "route", "status"}),
 	}
 	reg.MustRegister(m.MessagesConsumed, m.MessagesDropped, m.Duplicates,
-		m.AlertsPublished, m.EvalDuration, m.BreakerState, m.AlertDeliveryLatency,
-		m.httpReqTotal, m.httpReqDuration)
+		m.AlertsPublished, m.EvalDuration, m.BreakerState, m.Evaluations,
+		m.AlertDeliveryLatency, m.httpReqTotal, m.httpReqDuration)
 	return m
 }
 

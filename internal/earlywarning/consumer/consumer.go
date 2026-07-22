@@ -261,6 +261,30 @@ func (c *Consumer) handleParsed(ctx context.Context, d amqp.Delivery, wm wireMes
 	_ = d.Ack(false)
 }
 
+// outcomeOf labels an evaluation for ew_evaluations_total. The engine already
+// names every path it can take; this only picks which name applies, so the
+// label set stays exactly the set of skip reasons and notes in threshold.go —
+// bounded and stable, not derived from message content.
+//
+// "none" is the case worth naming explicitly: the reading WAS compared against
+// a baseline and stayed under every threshold. Everything else that isn't an
+// alert never reached the comparison at all, which is the distinction the
+// metric exists to make.
+func outcomeOf(res threshold.Result) string {
+	switch {
+	case res.Alert != nil:
+		return "alert"
+	case res.SkipReason != "":
+		return res.SkipReason
+	case res.Note == "alert_none":
+		return "none"
+	case res.Note != "":
+		return res.Note
+	default:
+		return "unknown"
+	}
+}
+
 // process runs evaluation + side effects. Returns an error only for retryable
 // failures (persistence). Skips/alerts that succeed return nil.
 func (c *Consumer) process(ctx context.Context, log *slog.Logger, wm wireMessage) error {
@@ -276,6 +300,7 @@ func (c *Consumer) process(ctx context.Context, log *slog.Logger, wm wireMessage
 	res := c.d.Engine.Evaluate(m, prev, c.d.Levels.Levels(m.ProjectID))
 	if c.d.Metrics != nil {
 		c.d.Metrics.EvalDuration.Observe(time.Since(start).Seconds())
+		c.d.Metrics.Evaluations.WithLabelValues(outcomeOf(res)).Inc()
 	}
 
 	if res.Alert != nil {

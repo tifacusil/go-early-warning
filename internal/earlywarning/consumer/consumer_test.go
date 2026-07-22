@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/AngelloFD/go-early-warning/internal/earlywarning/threshold"
 )
 
 func discardLogger() *slog.Logger {
@@ -185,5 +187,40 @@ func TestPrefetchNeverStarvesWorkers(t *testing.T) {
 		if c.prefetch() < c.workers() {
 			t.Errorf("workers=%d: prefetch %d < workers, pool would starve", w, c.prefetch())
 		}
+	}
+}
+
+// The point of ew_evaluations_total is telling apart "compared against a
+// baseline and stayed under every threshold" from "never got compared at
+// all" — under load the second dominates, and consumed-vs-alerts alone
+// cannot show it.
+func TestOutcomeOfSeparatesEvaluatedFromSkipped(t *testing.T) {
+	cases := []struct {
+		name string
+		res  threshold.Result
+		want string
+	}{
+		{"alerta", threshold.Result{Alert: &threshold.Alert{AlertLevel: "red"}}, "alert"},
+		{"evaluado sin cruce", threshold.Result{Note: "alert_none"}, "none"},
+		{"llego fuera de orden", threshold.Result{Note: "stale_reading_baseline_kept"}, "stale_reading_baseline_kept"},
+		{"hueco mayor a MaxDT", threshold.Result{SkipReason: "gap_too_large_reset"}, "gap_too_large_reset"},
+		{"sin baseline previo", threshold.Result{Note: "previous_none"}, "previous_none"},
+		{"no es gnss", threshold.Result{SkipReason: "sensor_type_not_gnss"}, "sensor_type_not_gnss"},
+		{"vacio", threshold.Result{}, "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := outcomeOf(tc.res); got != tc.want {
+				t.Fatalf("outcomeOf = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Una alerta gana sobre cualquier nota: el mensaje se evaluo y cruzo.
+func TestOutcomeOfPrefersTheAlert(t *testing.T) {
+	res := threshold.Result{Alert: &threshold.Alert{AlertLevel: "blue"}, Note: "alert_none"}
+	if got := outcomeOf(res); got != "alert" {
+		t.Fatalf("outcomeOf = %q, want alert", got)
 	}
 }
