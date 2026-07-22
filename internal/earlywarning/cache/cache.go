@@ -72,16 +72,69 @@ func (k *Cache) GetLastReading(ctx context.Context, sensorID string) (*threshold
 	return &threshold.Reading{Timestamp: ts.UTC(), CumulativeDisplacementMM: stored.CumulativeDisplacementMM}, nil
 }
 
-// SetLastReading stores the new baseline for a sensor.
-func (k *Cache) SetLastReading(ctx context.Context, sensorID string, r *threshold.Reading) error {
+// baselineCAS stores the reading only if the stored one is older.
+//
+// Sharding the consumer by sensor_id serialises a sensor's messages within a
+// replica, but not across replicas: two pods can hold two messages of the same
+// sensor at once, both read the same baseline, and both write it back. The
+// later write wins, so if the older message finishes last the baseline rewinds
+// to an earlier instant — the exact failure the threshold engine refuses to
+// cause on its own (threshold.go, "stale_reading_baseline_kept"), reintroduced
+// by the store. Measured cost when it happened: the alert rate went from 3.61%
+// to 5.12% just by raising the worker count.
+//
+// The guard is a compare-and-set rather than a lock: it encodes the invariant
+// ("the baseline never moves backwards in time") in the one place that can
+// enforce it atomically, costs the same single round trip as the plain SET, and
+// has no lease to renew or leak if a pod dies mid-evaluation. What it does NOT
+// prevent is two replicas evaluating against the same slightly stale baseline;
+// that yields a speed averaged over a longer window, which is conservative, and
+// converges as soon as one of the writes lands.
+//
+// Comparison is on timestamp_unix_us, not on the ISO string: sub-second ISO
+// timestamps do not sort lexicographically ("…:00Z" > "…:00.5Z" as text, and
+// backwards in time). Microseconds are finer than the wire format (which
+// carries milliseconds) and stay exact as a Lua/cjson double.
+//
+// A baseline written before this field existed has no timestamp_unix_us and is
+// overwritten unconditionally — the previous behaviour, self-healing after one
+// write.
+var baselineCAS = redis.NewScript(`
+local raw = redis.call('GET', KEYS[1])
+if raw then
+  local ok, stored = pcall(cjson.decode, raw)
+  if ok and type(stored) == 'table' then
+    local at = tonumber(stored.timestamp_unix_us)
+    if at and at >= tonumber(ARGV[2]) then
+      return 0
+    end
+  end
+end
+redis.call('SET', KEYS[1], ARGV[1])
+return 1
+`)
+
+// SetLastReading stores the new baseline for a sensor, unless a newer one is
+// already stored. Reports whether the write landed.
+func (k *Cache) SetLastReading(ctx context.Context, sensorID string, r *threshold.Reading) (bool, error) {
+	at := r.Timestamp.UTC()
+	micros := at.UnixMicro()
 	payload, err := json.Marshal(map[string]any{
-		"timestamp":                  r.Timestamp.UTC().Format(time.RFC3339),
+		// RFC3339Nano, not RFC3339: the latter drops the sub-second part, which
+		// shortens the next reading's dt and understates its deformation speed.
+		// The Python original stores isoformat(), which keeps it.
+		"timestamp":                  at.Format(time.RFC3339Nano),
+		"timestamp_unix_us":          micros,
 		"cumulative_displacement_mm": r.CumulativeDisplacementMM,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	return k.c.Set(ctx, lastKey(sensorID), payload, 0).Err()
+	written, err := baselineCAS.Run(ctx, k.c, []string{lastKey(sensorID)}, payload, micros).Int()
+	if err != nil {
+		return false, err
+	}
+	return written == 1, nil
 }
 
 // IncrRetry increments the per-message retry counter (1h TTL so it self-cleans)

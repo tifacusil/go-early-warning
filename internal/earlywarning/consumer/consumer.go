@@ -285,8 +285,15 @@ func (c *Consumer) process(ctx context.Context, log *slog.Logger, wm wireMessage
 	}
 
 	if res.ShouldStoreCurrent && res.StorePayload != nil && m.SensorID != "" {
-		if err := c.d.Cache.SetLastReading(ctx, m.SensorID, res.StorePayload); err != nil {
+		// Rejected means another replica already stored a newer reading for this
+		// sensor while we were evaluating; keeping theirs is the point (see
+		// cache.baselineCAS). Logged because a sustained rate of this is the
+		// signal that cross-replica overlap on a sensor has become common.
+		switch written, err := c.d.Cache.SetLastReading(ctx, m.SensorID, res.StorePayload); {
+		case err != nil:
 			log.Warn("store_last_reading_failed", slog.String("err", err.Error()))
+		case !written:
+			log.Info("baseline_write_superseded", slog.String("sensor_id", m.SensorID))
 		}
 	}
 	return nil
