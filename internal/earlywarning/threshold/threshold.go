@@ -141,7 +141,23 @@ func (c Config) Evaluate(m Message, previous *Reading, thresholds *Levels) Resul
 
 	dtSeconds := m.Timestamp.Sub(previous.Timestamp).Seconds()
 	if dtSeconds <= 0 {
-		return Result{ShouldStoreCurrent: true, StorePayload: store, Note: "non_positive_dt_overwrite_baseline"}
+		// El mensaje no es mas nuevo que el baseline: llego fuera de orden (o
+		// comparte timestamp, algo habitual porque la resolucion del timestamp
+		// de origen es de 1 segundo). Se descarta SIN tocar el baseline.
+		//
+		// El original (threshold_engine.py:118) sobreescribia el baseline aca.
+		// Eso lo hace retroceder a un instante viejo, y entonces el mensaje
+		// SIGUIENTE calcula su velocidad contra esa lectura vieja: dt grande,
+		// desplazamiento acumulado sin relacion, y cruce de umbral espurio.
+		// Medido en el barrido de desorden: con la carga desordenada que sufre
+		// el Sistema B saturado, esa sola linea llevaba la tasa de alerta de
+		// 0.29% a 8.00% (27x), todas `red`, sin que hubiera deformacion real.
+		//
+		// Conservar el baseline mas reciente hace la evaluacion idempotente
+		// frente al reordenamiento: el orden de llegada deja de cambiar el
+		// resultado. Es una correccion deliberada sobre el original, no un
+		// descuido del port.
+		return Result{Note: "stale_reading_baseline_kept"}
 	}
 	if dtSeconds > c.MaxDTSeconds {
 		return Result{ShouldStoreCurrent: true, StorePayload: store, SkipReason: "gap_too_large_reset"}

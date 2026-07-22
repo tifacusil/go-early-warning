@@ -72,11 +72,61 @@ func TestGapTooLargeResets(t *testing.T) {
 	}
 }
 
-func TestNonPositiveDTOverwrites(t *testing.T) {
-	prev := &Reading{Timestamp: baseMsg().Timestamp.Add(time.Hour), CumulativeDisplacementMM: 50}
-	r := cfg().Evaluate(baseMsg(), prev, &shangtan)
-	if r.Alert != nil || r.Note != "non_positive_dt_overwrite_baseline" {
-		t.Fatalf("expected baseline overwrite, got %+v", r)
+// Un mensaje que no es mas nuevo que el baseline se descarta sin tocarlo. Si
+// lo sobreescribiera (comportamiento del original), el baseline retrocederia y
+// el mensaje siguiente calcularia su velocidad contra una lectura vieja.
+func TestNonPositiveDTKeepsBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		delta time.Duration
+	}{
+		{"llega fuera de orden", time.Hour},
+		{"mismo timestamp", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := &Reading{Timestamp: baseMsg().Timestamp.Add(tc.delta), CumulativeDisplacementMM: 50}
+			r := cfg().Evaluate(baseMsg(), prev, &shangtan)
+			if r.Alert != nil {
+				t.Errorf("un mensaje viejo no puede generar alerta: %+v", r.Alert)
+			}
+			if r.ShouldStoreCurrent || r.StorePayload != nil {
+				t.Errorf("el baseline no debe retroceder, got ShouldStoreCurrent=%v payload=%+v",
+					r.ShouldStoreCurrent, r.StorePayload)
+			}
+			if r.Note != "stale_reading_baseline_kept" {
+				t.Errorf("nota inesperada: %q", r.Note)
+			}
+		})
+	}
+}
+
+// La propiedad que da el fix: el resultado de evaluar una secuencia no depende
+// del orden de llegada. Es lo que rompe el lazo desorden -> alertas espurias.
+func TestReorderingDoesNotChangeBaseline(t *testing.T) {
+	base := baseMsg()
+	older := base
+	older.Timestamp = base.Timestamp.Add(-30 * time.Minute)
+	older.CumulativeDisplacementMM = base.CumulativeDisplacementMM + 900 // salto enorme
+
+	// En orden: primero el viejo (fija baseline), despues el nuevo.
+	inOrder := cfg().Evaluate(older, &Reading{
+		Timestamp:                base.Timestamp.Add(-1 * time.Hour),
+		CumulativeDisplacementMM: base.CumulativeDisplacementMM,
+	}, &shangtan)
+	if !inOrder.ShouldStoreCurrent {
+		t.Fatalf("un mensaje mas nuevo que el baseline debe almacenarse: %+v", inOrder)
+	}
+
+	// Desordenado: el baseline ya avanzo mas alla del mensaje que llega.
+	outOfOrder := cfg().Evaluate(older, &Reading{
+		Timestamp:                base.Timestamp,
+		CumulativeDisplacementMM: base.CumulativeDisplacementMM,
+	}, &shangtan)
+	if outOfOrder.ShouldStoreCurrent {
+		t.Errorf("llegada tardia no debe mover el baseline: %+v", outOfOrder)
+	}
+	if outOfOrder.Alert != nil {
+		t.Errorf("llegada tardia no debe alertar (era %v mm/dia)", outOfOrder.Alert.DeformationSpeedMMDay)
 	}
 }
 
