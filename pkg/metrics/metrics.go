@@ -13,6 +13,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// httpBuckets are the HTTP latency histogram cutpoints, shared by the 4 Go
+// services and aligned to the SLO declared in application.yml for the Spring
+// services (Sistema A): 5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s, plus 2.5s/5s
+// to keep resolution under load. prometheus.DefBuckets would make percentiles
+// non-comparable against Sistema A via histogram_quantile.
+var httpBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
 // Metrics holds the custom collectors for a service. Process CPU/memory come
 // from the default process collector, registered alongside.
 type Metrics struct {
@@ -98,8 +105,8 @@ func New(service string) *Metrics {
 		}, []string{"method", "route", "status"}),
 		httpReqDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
-			Help:    "Latencia de requests HTTP. Buckets default cubren p50..p99.",
-			Buckets: prometheus.DefBuckets,
+			Help:    "Latencia de requests HTTP, buckets alineados al SLO de Sistema A -> percentiles via histogram_quantile.",
+			Buckets: httpBuckets,
 		}, []string{"method", "route", "status"}),
 	}
 	reg.MustRegister(m.MessagesConsumed, m.MessagesDropped, m.Duplicates,
