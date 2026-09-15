@@ -45,6 +45,18 @@ type Metrics struct {
 	// nothing here counted evaluations.
 	Evaluations *prometheus.CounterVec
 
+	// OutboundCalls counts synchronous gRPC calls leaving this service, by
+	// target and outcome ("ok", "timeout", "circuit_open", "error").
+	//
+	// Needed to interpret a breaker that does NOT open. The gauge alone cannot
+	// tell "the delay was not enough to time the calls out" from "the alert
+	// path never ran, so nothing was called" — and the second is easy to hit,
+	// because user-management is only called when an alert fires, which needs
+	// sensors that already have a baseline. With this counter, "breaker stayed
+	// closed" comes with the number of invocations and how many timed out,
+	// which is a finding instead of a blank.
+	OutboundCalls *prometheus.CounterVec
+
 	// AlertDeliveryLatency measures the controllable span: threshold crossed
 	// (Alert.EvaluatedAt) -> FCM accepts the multicast (HTTP 200 + message ID).
 	// Fine buckets since this path is expected to complete in low seconds.
@@ -93,6 +105,11 @@ func New(service string) *Metrics {
 			Help:        "Threshold engine outcomes: alert, none, or the skip reason.",
 			ConstLabels: cl,
 		}, []string{"outcome"}),
+		OutboundCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name:        "ew_outbound_calls_total",
+			Help:        "Outbound sync gRPC calls by target and outcome (ok/timeout/circuit_open/error).",
+			ConstLabels: cl,
+		}, []string{"target", "outcome"}),
 		AlertDeliveryLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:        "ew_alert_delivery_latency_seconds",
 			Help:        "Threshold crossed -> FCM multicast accepted (message ID assigned).",
@@ -111,7 +128,7 @@ func New(service string) *Metrics {
 	}
 	reg.MustRegister(m.MessagesConsumed, m.MessagesDropped, m.Duplicates,
 		m.AlertsPublished, m.EvalDuration, m.BreakerState, m.Evaluations,
-		m.AlertDeliveryLatency, m.httpReqTotal, m.httpReqDuration)
+		m.OutboundCalls, m.AlertDeliveryLatency, m.httpReqTotal, m.httpReqDuration)
 	return m
 }
 
