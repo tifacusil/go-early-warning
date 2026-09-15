@@ -129,7 +129,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		MaxRetries:    2,
 		FailThreshold: config.Int("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
 		OpenFor:       time.Duration(config.Int("CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30000)) * time.Millisecond,
-	}))
+	}), mx)
 
 	// --- Threshold engine + project levels ---
 	engine := threshold.DefaultConfig(float64(config.Int("MAX_DT_SECONDS", 7200)))

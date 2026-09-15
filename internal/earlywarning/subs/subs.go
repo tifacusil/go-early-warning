@@ -6,13 +6,23 @@ package subs
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	umv1 "github.com/AngelloFD/go-early-warning/internal/earlywarning/grpc/usermanagement/v1"
 	"github.com/AngelloFD/go-early-warning/pkg/grpcx"
+	"github.com/AngelloFD/go-early-warning/pkg/metrics"
 )
+
+// breakerTarget labels this resolver's breaker in ew_circuit_breaker_state.
+// user-management is the only synchronous dependency on the ALERT path, so it
+// is the only breaker whose opening can be exercised by delaying a dependency
+// of that path — data-analysis sits on the report path instead.
+const breakerTarget = "user-management"
 
 var levelValue = map[string]int{"blue": 1, "orange": 2, "red": 3}
 
@@ -32,20 +42,60 @@ type Resolver struct {
 	client umv1.SubscriptionServiceClient
 	caller *grpcx.Caller
 	now    func() time.Time
+	// mx publishes the breaker state to /metrics. Optional: nil disables the
+	// gauge (tests, and any caller that does not collect metrics).
+	mx *metrics.Metrics
 }
 
 // New builds a Resolver over an existing gRPC connection. caller carries the
-// timeout/retry/breaker policy.
-func New(conn grpc.ClientConnInterface, caller *grpcx.Caller) *Resolver {
+// timeout/retry/breaker policy. mx may be nil to skip metrics.
+func New(conn grpc.ClientConnInterface, caller *grpcx.Caller, mx *metrics.Metrics) *Resolver {
 	return &Resolver{
 		client: umv1.NewSubscriptionServiceClient(conn),
 		caller: caller,
 		now:    time.Now,
+		mx:     mx,
 	}
 }
 
-// BreakerState exposes the breaker state for /metrics.
+// BreakerState exposes the breaker state as a string, for /health.
 func (r *Resolver) BreakerState() string { return r.caller.State().String() }
+
+// publishBreakerState mirrors the breaker into ew_circuit_breaker_state
+// (0 closed / 1 open / 2 half_open), the same gauge the data-analysis caller
+// feeds from api.enrich. Without this the series simply does not exist for
+// user-management and a chaos run cannot tell "breaker stayed closed" from
+// "breaker was never measured" — which is what invalidated the earlier
+// data-analysis scenario.
+func (r *Resolver) publishBreakerState() {
+	if r.mx == nil {
+		return
+	}
+	r.mx.BreakerState.WithLabelValues(breakerTarget).Set(float64(r.caller.State()))
+}
+
+// recordOutcome counts one outbound call. "timeout" is the outcome that makes
+// the breaker advance, so it is kept apart from a generic error: a delay
+// injection that does not push calls past USER_MANAGEMENT_TIMEOUT_MS produces
+// "ok", and that is the difference between "the injection was too weak" and
+// "the alert path never called out at all".
+func (r *Resolver) recordOutcome(err error) {
+	if r.mx == nil {
+		return
+	}
+	outcome := "ok"
+	switch {
+	case err == nil:
+	case errors.Is(err, grpcx.ErrCircuitOpen):
+		outcome = "circuit_open"
+	case errors.Is(err, context.DeadlineExceeded),
+		status.Code(err) == codes.DeadlineExceeded:
+		outcome = "timeout"
+	default:
+		outcome = "error"
+	}
+	r.mx.OutboundCalls.WithLabelValues(breakerTarget, outcome).Inc()
+}
 
 func (r *Resolver) fetch(ctx context.Context, projectID string) ([]Subscription, error) {
 	var resp *umv1.GetSubscriptionsResponse
@@ -54,6 +104,10 @@ func (r *Resolver) fetch(ctx context.Context, projectID string) ([]Subscription,
 		resp, e = r.client.GetSubscriptions(c, &umv1.GetSubscriptionsRequest{ProjectId: projectID})
 		return e
 	})
+	// Sampled after every call, success or failure, so the gauge tracks the
+	// open -> half_open -> closed transitions the recovery time is read from.
+	r.publishBreakerState()
+	r.recordOutcome(err)
 	if err != nil {
 		return nil, err
 	}
