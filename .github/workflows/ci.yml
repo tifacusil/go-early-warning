@@ -84,8 +84,18 @@ jobs:
 
       - name: stubs gRPC al día (buf generate sin diffs)
         run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          # protoc-gen-go se instala en la version EXACTA que declara go.mod, no
+          # con @latest. Con @latest el check compara los stubs commiteados
+          # contra los que genera una version que cambia sola: en cuanto upstream
+          # publica, el job falla en TODOS los PRs con un diff que es solo el
+          # comentario "// protoc-gen-go vX.Y.Z" de la cabecera. Paso el
+          # 2026-09-15 al salir protobuf v1.36.12 contra un go.mod en v1.36.11.
+          PROTOBUF_VERSION="$(go list -m -f '{{.Version}}' google.golang.org/protobuf)"
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOBUF_VERSION}"
+          # protoc-gen-go-grpc es un modulo aparte y NO figura en go.mod, asi que
+          # va pinneado literal. Debe coincidir con la version de la cabecera de
+          # los *_grpc.pb.go commiteados; al subirla hay que regenerar y commitear.
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
           export PATH="$(go env GOPATH)/bin:$PATH"
           cd contracts/proto && buf generate
           cd "$GITHUB_WORKSPACE"
