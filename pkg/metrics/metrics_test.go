@@ -62,6 +62,23 @@ func TestMiddlewareRecordsStatusAndLatency(t *testing.T) {
 	}
 }
 
+// Guards against going back to a native-only histogram: without classic
+// buckets Prometheus only sees le="+Inf" and percentiles come out NaN.
+func TestEvalDurationHasClassicBuckets(t *testing.T) {
+	m := New("early-warning")
+	m.EvalDuration.Observe(9e-6)
+
+	out := scrapeBody(t, m)
+	for _, want := range []string{
+		`ew_eval_duration_seconds_bucket{service="early-warning",le="1e-06"} 0`,
+		`ew_eval_duration_seconds_bucket{service="early-warning",le="1.5625e-05"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics output missing %q", want)
+		}
+	}
+}
+
 func scrapeBody(t *testing.T, m *Metrics) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
