@@ -93,8 +93,15 @@ func New(service string) *Metrics {
 		AlertsPublished: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ew_alerts_published_total", Help: "Alerts published, by level.", ConstLabels: cl,
 		}, []string{"level"}),
+		// Classic buckets are required: Prometheus runs without the
+		// native-histograms feature, so a native-only histogram reached it as a
+		// single +Inf bucket and histogram_quantile returned NaN. Buckets start
+		// at 1µs because Evaluate is pure in-memory math (~9µs mean on the
+		// 2026-09-18 run); DefBuckets starts at 5ms and would put every sample
+		// in the first bucket.
 		EvalDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name: "ew_eval_duration_seconds", Help: "Message evaluation latency.", ConstLabels: cl,
+			Name: "ew_eval_duration_seconds", Help: "Threshold engine Evaluate() latency (in-memory, excludes Redis/RabbitMQ).", ConstLabels: cl,
+			Buckets:                     prometheus.ExponentialBuckets(1e-6, 2.5, 12), // 1µs .. ~24ms
 			NativeHistogramBucketFactor: 1.1,
 		}),
 		BreakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
