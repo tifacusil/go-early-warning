@@ -34,14 +34,46 @@ type ThresholdProvider interface {
 	Levels(projectID string) *threshold.Levels
 }
 
-// Deps bundles the consumer's collaborators.
+// Cache is the Redis state the pipeline reads and writes (*cache.Cache).
+type Cache interface {
+	GetLastReading(ctx context.Context, sensorID string) (*threshold.Reading, error)
+	SetLastReading(ctx context.Context, sensorID string, r *threshold.Reading) (bool, error)
+	SetLastMessageProcessedAt(ctx context.Context, iso string) error
+	IncrRetry(ctx context.Context, messageID string) (int64, error)
+	IncrAlertsGenerated(ctx context.Context) (int64, error)
+	PushRecentAlert(ctx context.Context, a *threshold.Alert) error
+}
+
+// AlertStore is the durable alert record (*store.Store).
+type AlertStore interface {
+	RecordAlert(ctx context.Context, a store.AlertRow) error
+}
+
+// AlertPublisher fans an alert out to its side channels (*publisher.Publisher).
+type AlertPublisher interface {
+	PublishRabbitMQ(ctx context.Context, a *threshold.Alert) error
+	PublishHTTP(ctx context.Context, a *threshold.Alert)
+	PublishPush(ctx context.Context, a *threshold.Alert, tokens []string) bool
+}
+
+// Compile-time proof that the production types still satisfy the interfaces
+// main wires in; a signature drift fails the build here, not at startup.
+var (
+	_ Cache          = (*cache.Cache)(nil)
+	_ AlertStore     = (*store.Store)(nil)
+	_ AlertPublisher = (*publisher.Publisher)(nil)
+)
+
+// Deps bundles the consumer's collaborators. Cache, Store and Publisher are
+// interfaces so the per-message pipeline (dedup, degradation, retry -> DLQ)
+// can be unit-tested with fakes instead of Redis/MySQL/RabbitMQ.
 type Deps struct {
 	Channel    *amqp.Channel
 	Queue      string
 	Engine     threshold.Config
-	Cache      *cache.Cache
-	Store      *store.Store
-	Publisher  *publisher.Publisher
+	Cache      Cache
+	Store      AlertStore
+	Publisher  AlertPublisher
 	Subs       SubscriptionResolver
 	Levels     ThresholdProvider
 	Idemp      idempotency.Store // dedup by message_id (CLAUDE.md §1.3)
@@ -353,12 +385,18 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 	c.d.Publisher.PublishHTTP(ctx, a)
 
 	tokens, err := c.d.Subs.TokensFor(ctx, a.ProjectID, a.AlertLevel)
+	pushPath := metrics.PushPathDelivered
 	switch {
 	case err != nil:
+		// user-management unreachable, timed out, or its breaker is open. The
+		// alert still goes on to be persisted below: this is the degraded mode
+		// CLAUDE.md §2.3 requires, and pushPath marks it in the dispatch metric.
+		pushPath = metrics.PushPathResolveFailed
 		log.Warn("push_flow_failed", slog.String("err", err.Error()))
 	case len(tokens) == 0:
 		// Not an error: no subscriber is push_enabled/eligible for this level.
 		// Logged so "no push happened" is never confused with "push succeeded".
+		pushPath = metrics.PushPathNoTokens
 		log.Info("push_skipped_no_tokens", slog.String("level", a.AlertLevel))
 	default:
 		if delivered := c.d.Publisher.PublishPush(ctx, a, tokens); delivered {
@@ -366,6 +404,8 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 			if m := c.m(); m != nil && !a.EvaluatedAt.IsZero() {
 				m.AlertDeliveryLatency.Observe(time.Since(a.EvaluatedAt).Seconds())
 			}
+		} else {
+			pushPath = metrics.PushPathPushFailed
 		}
 	}
 
@@ -382,12 +422,17 @@ func (c *Consumer) dispatch(ctx context.Context, log *slog.Logger, a *threshold.
 	}
 	if c.d.Metrics != nil {
 		c.d.Metrics.AlertsPublished.WithLabelValues(a.AlertLevel).Inc()
+		if !a.EvaluatedAt.IsZero() {
+			c.d.Metrics.AlertDispatchDuration.WithLabelValues(pushPath).
+				Observe(time.Since(a.EvaluatedAt).Seconds())
+		}
 	}
 	log.Info("alert_emitted",
 		slog.String("sensor_id", a.SensorID),
 		slog.String("project_id", a.ProjectID),
 		slog.String("level", a.AlertLevel),
 		slog.Float64("speed_mm_day", a.DeformationSpeedMMDay),
+		slog.String("push_path", pushPath),
 	)
 	return nil
 }

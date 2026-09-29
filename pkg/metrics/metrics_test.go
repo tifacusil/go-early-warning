@@ -79,6 +79,25 @@ func TestEvalDurationHasClassicBuckets(t *testing.T) {
 	}
 }
 
+// A degraded dispatch with the breaker still closed takes ~21s (3 x 5s timeout
+// + 1s + 5s backoff). It must land in a finite bucket, or the O6 degradation
+// latency reads as +Inf and histogram_quantile cannot place it.
+func TestAlertDispatchDurationResolvesDegradedLatency(t *testing.T) {
+	m := New("early-warning")
+	m.AlertDispatchDuration.WithLabelValues(PushPathResolveFailed).Observe(21)
+
+	out := scrapeBody(t, m)
+	for _, want := range []string{
+		`ew_alert_dispatch_duration_seconds_bucket{push_path="resolve_failed",service="early-warning",le="20"} 0`,
+		`ew_alert_dispatch_duration_seconds_bucket{push_path="resolve_failed",service="early-warning",le="30"} 1`,
+		`ew_alert_dispatch_duration_seconds_count{push_path="resolve_failed",service="early-warning"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics output missing %q", want)
+		}
+	}
+}
+
 func scrapeBody(t *testing.T, m *Metrics) string {
 	t.Helper()
 	rec := httptest.NewRecorder()

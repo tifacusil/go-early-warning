@@ -98,6 +98,9 @@ type ackRecorder struct {
 	acks   int
 	nacks  int
 	reject int
+	// requeue holds the requeue flag of each Nack, in order: true is a retry,
+	// false hands the message to the queue's dead-letter exchange.
+	requeue []bool
 }
 
 func (a *ackRecorder) Ack(uint64, bool) error {
@@ -107,10 +110,11 @@ func (a *ackRecorder) Ack(uint64, bool) error {
 	return nil
 }
 
-func (a *ackRecorder) Nack(_ uint64, _ bool, _ bool) error {
+func (a *ackRecorder) Nack(_ uint64, _ bool, requeue bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nacks++
+	a.requeue = append(a.requeue, requeue)
 	return nil
 }
 
