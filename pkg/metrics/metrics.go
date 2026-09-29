@@ -62,6 +62,20 @@ type Metrics struct {
 	// Fine buckets since this path is expected to complete in low seconds.
 	AlertDeliveryLatency prometheus.Histogram
 
+	// AlertDispatchDuration measures threshold crossed (Alert.EvaluatedAt) ->
+	// alert durably recorded in MySQL, by push_path (see PushPath*).
+	//
+	// AlertDeliveryLatency cannot measure the degraded mode: it only observes
+	// when FCM accepts a push, which is exactly what does not happen while
+	// user-management is down. Yet that is the window where the latency cost
+	// shows up — the subscriber lookup sits BEFORE the MySQL write, so with
+	// user-management timing out and the breaker still closed every alert
+	// waits out timeout x attempts + backoff (~21s with the defaults) before it
+	// is recorded. Once the breaker opens, the lookup fails fast and the
+	// latency should drop back. push_path="resolve_failed" isolates that span;
+	// its _count is also the number of alerts emitted in degraded mode.
+	AlertDispatchDuration *prometheus.HistogramVec
+
 	// HTTP: same metric name as data-management/project-management/
 	// user-management (http_request_duration_seconds, http_requests_total) so
 	// the Grafana A-vs-B dashboard can aggregate every Go service the same way.
@@ -123,6 +137,16 @@ func New(service string) *Metrics {
 			ConstLabels: cl,
 			Buckets:     []float64{.01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
 		}),
+		// Up to 120s: a degraded dispatch with the breaker still closed spends
+		// ~21s in the subscriber lookup alone, and several can queue on the
+		// same sensor's worker. Classic buckets for the same reason as
+		// EvalDuration (Prometheus has no native histograms enabled).
+		AlertDispatchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:        "ew_alert_dispatch_duration_seconds",
+			Help:        "Threshold crossed -> alert recorded in MySQL, by push_path (delivered/no_tokens/push_failed/resolve_failed).",
+			ConstLabels: cl,
+			Buckets:     []float64{.01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120},
+		}, []string{"push_path"}),
 		httpReqTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "http_requests_total",
 			Help: "Total de requests HTTP por metodo, ruta y codigo.",
@@ -135,9 +159,19 @@ func New(service string) *Metrics {
 	}
 	reg.MustRegister(m.MessagesConsumed, m.MessagesDropped, m.Duplicates,
 		m.AlertsPublished, m.EvalDuration, m.BreakerState, m.Evaluations,
-		m.OutboundCalls, m.AlertDeliveryLatency, m.httpReqTotal, m.httpReqDuration)
+		m.OutboundCalls, m.AlertDeliveryLatency, m.AlertDispatchDuration,
+		m.httpReqTotal, m.httpReqDuration)
 	return m
 }
+
+// push_path values for ew_alert_dispatch_duration_seconds. A closed set, so
+// the label cardinality is fixed regardless of what the alert carries.
+const (
+	PushPathDelivered     = "delivered"      // FCM accepted the multicast
+	PushPathNoTokens      = "no_tokens"      // lookup OK, nobody eligible
+	PushPathPushFailed    = "push_failed"    // lookup OK, FCM did not accept
+	PushPathResolveFailed = "resolve_failed" // user-management lookup failed: degraded mode
+)
 
 // Middleware measures every request that reaches the mux: increments the
 // counter and observes latency. Wraps the whole mux (not per-handler
